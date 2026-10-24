@@ -1,0 +1,269 @@
+===================== PAGE 1 =====================
+B.Tech CSE                            PROJECT PROPOSAL 
+ 
+                  Page 1 
+ 
+ 
+ 
+ 
+ 
+ 
+Project Title 
+(Try to choose a catchy title. Max 20 words). 
+ 
+ResQCore - Disaster Management Resource Allocation Platform 
+ 
+Student/Team Information 
+ 
+Team Name: Devankkashyap01 
+Team member 1 (Team Lead) 
+Name: Devank Kashyap 
+Student ID: 240112245 
+Email: devankkashyap01@gmail.com 
+ 
+Team member 2 
+Name: Prince Badola 
+Student ID: 25011009 
+Email: princebadola61@gmail.com 
+ 
+PROJECT AND TEAM INFORMATION 
+
+===================== PAGE 2 =====================
+B.Tech CSE                            PROJECT PROPOSAL 
+ 
+                  Page 2 
+Team member 3 
+Name: Vaibhav Kathait 
+Student ID: 240211275 
+Email: vaibhakathait33@gmail.com 
+ 
+Team member 4 
+Name: Shristi Mohan Verma 
+Student ID: 24012284 
+Email: Shristimohan60202005@gmail.com 
+ 
+ 
+
+
+===================== PAGE 3 =====================
+B.Tech CSE                            PROJECT PROPOSAL 
+ 
+                  Page 3 
+ 
+ 
+ 
+ 
+ 
+Project Abstract 
+(Brief restatement of your project’s main goal. Max 300 words). 
+ResQCore is a disaster-response platform for handling emergency requests when rescue teams, ambulances and supplies 
+are limited. The main idea of the project is to treat every emergency request like an OS process, so that the most critical 
+case gets resources first instead of the first-come-first-served order. The OS side covers scheduling, safe resource 
+allocation, synchronization and deadlock detection, and the DBMS side keeps the data consistent with transactions, 
+constraints and audit logs. 
+In Phase 2 we completed the mobile application layer of the project. We built two Android apps in Flutter and a command 
+centre. The first is the ResQCore citizen app, where a person can report a flood, earthquake, fire or other emergency in a 
+few steps, share location, track the request, see hazard zones and live rescue teams, read safety guides and call 112. The 
+second is the RescueTeam Ops app for rescue teams and operators, which has a dashboard, incident list, live tactical map, 
+team and member tracking, shelters with casualty triage, team chat and an SOS screen. 
+Both apps are built and packaged as release APKs, and the command centre is also built. At present they run on sample 
+data stored inside the app. The next phase is to build the OS simulation engine and the database, and connect the apps to 
+them. 
+ 
+Updated Project Approach and Architecture 
+(Describe your current approach, including system design, communication protocols, libraries used, etc. Max 300 words). 
+ 
+Current approach: we first designed all the screens in Stitch (an AI UI design tool), saved the designs as screen images and 
+HTML, and then converted them into Flutter code. We kept the front-end separate from the backend so that the OS and 
+DBMS parts can be connected later without redesigning the screens. 
+• Language and framework: Dart with Flutter (Material design), targeting Android. 
+• State management: the citizen app uses the Provider package (RescueProvider with ChangeNotifier); the team app 
+uses its own AppState class with ChangeNotifier. 
+• Structure: each app is split into models, screens, widgets and theme folders. Models include incident, rescue team, 
+shelter, evacuee, hazard zone, safety guide and chat message. 
+• Maps: the live map is drawn with Flutter CustomPaint (tactical map canvas and radar widget), not with an online map 
+service. 
+• Other libraries: google_fonts and intl in the citizen app. The Android manifest asks for location, call and camera 
+permissions (internet and location in the team app). 
+• Data: all incidents, teams, shelters and alerts are sample data inside the code for now. 
+Planned system design: the apps will talk to a backend over REST APIs (JSON over HTTP). The backend will have the OS 
+simulation engine (PCB, schedulers, Banker's algorithm, mutex/semaphore, RAG deadlock detection) and a relational 
+database as the permanent store, connected through an integration layer. 
+PROJECT PROGRESS DESCRIPTION 
+
+===================== PAGE 4 =====================
+B.Tech CSE                            PROJECT PROPOSAL 
+ 
+                  Page 4 
+ 
+  
+
+===================== PAGE 5 =====================
+B.Tech CSE                            PROJECT PROPOSAL 
+ 
+                  Page 5 
+ 
+Tasks Completed 
+(Describe the main tasks that have been assigned and already completed. Max 250 words). 
+Task Completed Team Member 
+Designed all screens in Stitch and built the dark tactical 
+theme and common widgets for both apps 
+ 
+RescueTeam Ops app: login with demo roles, home 
+dashboard, SOS screen and AppState 
+ 
+RescueTeam Ops app: incident list with report-incident 
+dialog, live map, team and member GPS screen 
+ 
+RescueTeam Ops app: shelters with casualty triage and 
+tactical team chat 
+ 
+ResQCore citizen app: welcome, sign-in, OTP verification and 
+profile 
+ 
+ResQCore citizen app: step-by-step emergency report 
+wizard, my requests, request detail 
+ 
+ResQCore citizen app: home, live map with hazard zones and 
+rescue teams, alerts, inbox 
+ 
+ResQCore citizen app: safety guides, quick SOS and Call 112 
+dialogs, dark/light theme 
+ 
+Built release APKs of both apps  
+Command centre built along with the two mobile apps  
+
+===================== PAGE 6 =====================
+B.Tech CSE                            PROJECT PROPOSAL 
+ 
+                  Page 6 
+ 
+Challenges/Roadblocks 
+(Describe the challenges that you have faced or are facing so far and how you plan to solve them. Max 300 words). 
+• All data is sample data. The apps do not use a real database or server yet, so a request sent from the citizen app does 
+not reach the team app. We plan to build the backend and APIs in the next phase and replace the sample data step by 
+step. 
+• OS and DBMS parts are not built yet. The scheduling algorithms, Banker's algorithm, deadlock detection and the 
+database design are still on paper. This is the biggest gap. We will start with the database schema and the scheduler, 
+since the other parts depend on them. 
+• Two separate apps. The citizen app and the team app have their own models and themes, and some code is 
+repeated. We will keep common models in one shared format (through the API) so that both apps stay in sync. 
+• Map and GPS are simulated. The map is drawn with CustomPaint and locations are fixed values. We will test a real 
+location and map package after the backend is ready. 
+• Testing is very limited. Only the default smoke test exists in each app. We plan to add unit tests for the OS algorithms 
+and widget tests for the main screens. 
+• App size and team coordination. The APKs are about 54 MB because of the large scenario images, so we will 
+compress them. We also need a shared GitHub repository and regular commits so that all four members can work on 
+the same code. 
+ 
+Tasks Pending 
+(Describe the main tasks that you still need to complete. Max 250 words). 
+Task Pending Team Member (to complete the task) 
+Design the ER diagram, relational schema (up to 3NF) and 
+create the 13 tables with keys and constraints 
+ 
+Write indexes, views, stored procedures and triggers, 
+including AUDIT_LOG 
+ 
+Implement transactions, locking/isolation, 
+COMMIT/ROLLBACK and recovery demo 
+ 
+Build PCB and process states, and the schedulers: Priority, 
+MLFQ, FCFS, Round Robin, SRTF, EDF and Aging 
+ 
+Implement Banker's algorithm, mutex/semaphore and RAG 
+deadlock detection 
+ 
+Smart resource selection (availability, distance, capacity, 
+priority, ETA) 
+ 
+Build backend REST APIs and connect both apps; remove 
+sample data 
+ 
+
+===================== PAGE 7 =====================
+B.Tech CSE                            PROJECT PROPOSAL 
+ 
+                  Page 7 
+Real location and map, real OTP login, push notifications  
+Testing of scheduling, allocation, concurrency, deadlock and 
+recovery; metrics reports 
+ 
+Final report, demo scenario and presentation  
+ 
+Project Outcome/Deliverables 
+(Describe what are the key outcomes / deliverables of the project. Max 200 words). 
+ 
+By the end of the project we will deliver: 
+• A working citizen app, a rescue-team app for Android (already built as APKs) and a command centre. 
+• An OS simulation engine that treats each emergency request as a process and supports the scheduling algorithms, 
+Banker's algorithm, synchronization and deadlock detection. 
+• A relational database with 13 tables, constraints, indexes, views, stored procedures, triggers, transactions and 
+recovery. 
+• An integration layer and APIs that connect the apps, the OS engine and the database. 
+• Performance reports (waiting time, turnaround time, response time, throughput and resource utilization) and a full 
+disaster scenario demo. 
+ 
+Progress Overview 
+(Summarize how much of the project is done, what's behind schedule, what's ahead of schedule. Max 200 words.) 
+The front-end part is complete. Both apps and the command centre are built, packaged as release APKs and all main 
+screens work with sample data. We think about 35% of the full project is done. 
+Ahead of schedule: the user interface of both apps. The designs were finished early, so the screens are ready to connect 
+to the backend. 
+Behind schedule: the OS simulation engine, the database and the integration between them. Code for these parts has not 
+been written yet, and they are the core of the project. Testing is also behind. 
+For the next phase we will start with the database schema and the scheduler, then connect the apps through APIs. 
+
+===================== PAGE 8 =====================
+B.Tech CSE                            PROJECT PROPOSAL 
+ 
+                  Page 8 
+ 
+Codebase Information 
+(Repository link, branch, and information about important commits.) 
+Repository link: [add team GitHub repository link here] 
+Branch: [add branch name, e.g. main] 
+The code is in two Flutter projects: 
+• rescue_app (RescueTeam Ops): lib/models, lib/screens (8 screens), lib/widgets, lib/theme; release build RescueTeam-
+TacticalOps-Release.apk. 
+• rescue_core (ResQCore citizen app): lib/models, lib/providers/rescue_provider.dart, lib/screens (with wizard and 
+dialogs folders), lib/widgets, lib/theme; release build release_apk/app-release.apk. 
+Important commits: [add commit ids and messages, e.g. UI screens added, theme added, release build] 
+ 
+Testing and Validation Status 
+(Provide information about any tests conducted) 
+ 
+Test Type Status (Pass/Fail) Notes 
+Release build (APK) Pass Release APKs of both apps were 
+generated. 
+Widget smoke test - team app Not run Default test is written; result not 
+recorded yet. 
+Widget smoke test - citizen app Not run Default test is written; result not 
+recorded yet. 
+Manual screen walkthrough In progress Screens checked with sample data 
+only. 
+Scheduling and Banker's tests Pending OS engine not built yet. 
+Database and transaction tests Pending Database not built yet. 
+API integration test Pending Backend not built yet. 
+
+===================== PAGE 9 =====================
+B.Tech CSE                            PROJECT PROPOSAL 
+ 
+                  Page 9 
+ 
+Deliverables Progress 
+(Summarize the current status of all key project deliverables mentioned earlier. Indicate whether each deliverable is 
+completed, in progress, or pending.) 
+• Process management and scheduling (OS): Pending 
+• Banker's algorithm, synchronization and deadlock detection: Pending 
+• OS dashboard (running processes, Gantt chart): In progress (team app dashboard and incident list built, not 
+connected to a real scheduler) 
+• Citizen mobile app: Completed (UI with sample data) 
+• Rescue-team mobile app: Completed (UI with sample data) 
+• Command centre: Completed 
+• Database design, tables and views: Pending 
+• Transactions, triggers and recovery: Pending 
+• OS-DBMS integration layer and APIs: Pending 
+• Performance reports and testing: Pending 
+ 
+
