@@ -1,525 +1,489 @@
-import { DatabaseSync } from 'node:sqlite';
+import pg from 'pg';
 import path from 'path';
 import fs from 'fs';
-import { fileURLToPath } from 'url';
-import { seedIncidents, seedTeams, seedMessages, seedAlerts, seedShelters } from '../data/seedData.js';
+import crypto from 'crypto';
+import { BACKEND_ROOT, DATABASE_URL, IS_PROD } from './config.js';
+import { referenceSectors, referenceShelters, referenceVolunteers } from '../data/seedData.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const DB_PATH = path.join(DATA_DIR, 'resqcore.db');
+const { Pool } = pg;
 
-export const INITIAL_SECTORS = [
-  // Uttarakhand (Primary Theater)
-  {
-    id: 'SEC-UK-01',
-    theater: 'uttarakhand',
-    name: 'Sector 1: Alpha Valley',
-    short_name: 'SEC-1: Alpha',
-    color: '#EF4444',
-    description: 'Alaknanda River Gorge & Lower Valley. Flash flood & landslide vulnerability.',
-    center_lat: 30.565,
-    center_lng: 79.545,
-    bounds: [
-      { lat: 30.585, lng: 79.525 },
-      { lat: 30.585, lng: 79.565 },
-      { lat: 30.545, lng: 79.565 },
-      { lat: 30.545, lng: 79.525 }
-    ],
-    status: 'Evacuating',
-    alert_level: 'Critical'
-  },
-  {
-    id: 'SEC-UK-02',
-    theater: 'uttarakhand',
-    name: 'Sector 2: Bravo Urban',
-    short_name: 'SEC-2: Bravo',
-    color: '#F59E0B',
-    description: 'Joshimath Urban Center & Main Bazaar. Structural monitoring & shelter zone.',
-    center_lat: 30.565,
-    center_lng: 79.585,
-    bounds: [
-      { lat: 30.585, lng: 79.565 },
-      { lat: 30.585, lng: 79.605 },
-      { lat: 30.545, lng: 79.605 },
-      { lat: 30.545, lng: 79.565 }
-    ],
-    status: 'Active',
-    alert_level: 'Warning'
-  },
-  {
-    id: 'SEC-UK-03',
-    theater: 'uttarakhand',
-    name: 'Sector 3: Charlie Ridge',
-    short_name: 'SEC-3: Charlie',
-    color: '#38BDF8',
-    description: 'Auli / Upper Mountain Ridge. Helipad extraction & high-altitude recon.',
-    center_lat: 30.525,
-    center_lng: 79.585,
-    bounds: [
-      { lat: 30.545, lng: 79.565 },
-      { lat: 30.545, lng: 79.605 },
-      { lat: 30.505, lng: 79.605 },
-      { lat: 30.505, lng: 79.565 }
-    ],
-    status: 'Active',
-    alert_level: 'Normal'
-  },
-  {
-    id: 'SEC-UK-04',
-    theater: 'uttarakhand',
-    name: 'Sector 4: Delta Logistics',
-    short_name: 'SEC-4: Delta',
-    color: '#10B981',
-    description: 'Chamoli Transit & National Highway Corridor. Heavy machinery & staging.',
-    center_lat: 30.525,
-    center_lng: 79.545,
-    bounds: [
-      { lat: 30.545, lng: 79.525 },
-      { lat: 30.545, lng: 79.565 },
-      { lat: 30.505, lng: 79.565 },
-      { lat: 30.505, lng: 79.525 }
-    ],
-    status: 'Secured',
-    alert_level: 'Normal'
-  },
-  // Kerala (Demo Theater)
-  {
-    id: 'SEC-KL-01',
-    theater: 'kerala',
-    name: 'Sector 1: Coastal Vypin',
-    short_name: 'SEC-1: Vypin',
-    color: '#EF4444',
-    description: 'Vypin Island Coastal Surge Zone. Coastal erosion and high tide warnings.',
-    center_lat: 9.992,
-    center_lng: 76.225,
-    bounds: [
-      { lat: 10.010, lng: 76.210 },
-      { lat: 10.010, lng: 76.240 },
-      { lat: 9.975, lng: 76.240 },
-      { lat: 9.975, lng: 76.210 }
-    ],
-    status: 'Active',
-    alert_level: 'Warning'
-  },
-  {
-    id: 'SEC-KL-02',
-    theater: 'kerala',
-    name: 'Sector 2: Mattancherry Basin',
-    short_name: 'SEC-2: Mattancherry',
-    color: '#F59E0B',
-    description: 'Historic District & Canal Inundation Zone.',
-    center_lat: 9.958,
-    center_lng: 76.260,
-    bounds: [
-      { lat: 9.975, lng: 76.245 },
-      { lat: 9.975, lng: 76.275 },
-      { lat: 9.940, lng: 76.275 },
-      { lat: 9.940, lng: 76.245 }
-    ],
-    status: 'Active',
-    alert_level: 'Normal'
-  },
-  {
-    id: 'SEC-KL-03',
-    theater: 'kerala',
-    name: 'Sector 3: Willingdon Hub',
-    short_name: 'SEC-3: Port Hub',
-    color: '#38BDF8',
-    description: 'Willingdon Island Maritime Logistics & Naval Base Relief Staging.',
-    center_lat: 9.945,
-    center_lng: 76.280,
-    bounds: [
-      { lat: 9.965, lng: 76.265 },
-      { lat: 9.965, lng: 76.305 },
-      { lat: 9.925, lng: 76.305 },
-      { lat: 9.925, lng: 76.265 }
-    ],
-    status: 'Secured',
-    alert_level: 'Normal'
-  },
-  {
-    id: 'SEC-KL-04',
-    theater: 'kerala',
-    name: 'Sector 4: Fort Kochi Waterways',
-    short_name: 'SEC-4: Fort Kochi',
-    color: '#10B981',
-    description: 'Low-Lying Canal Basin & Ferry Terminal. Swiftwater rescue boat grid.',
-    center_lat: 9.966,
-    center_lng: 76.240,
-    bounds: [
-      { lat: 9.975, lng: 76.220 },
-      { lat: 9.975, lng: 76.250 },
-      { lat: 9.945, lng: 76.250 },
-      { lat: 9.945, lng: 76.220 }
-    ],
-    status: 'Active',
-    alert_level: 'Normal'
-  }
-];
+const nowIso = () => new Date().toISOString();
+const shortId = (len = 5) =>
+  crypto.randomBytes(8).toString('base64url').replace(/[^A-Za-z0-9]/g, '').slice(0, len).toUpperCase();
+const bool = (v) => (v ? 1 : 0);
 
 class DatabaseManager {
   constructor() {
-    this._db = null;
+    this._pool = null;
+    this._initPromise = null;
   }
 
-  get db() {
-    if (!this._db) {
-      this.init();
-    }
-    return this._db;
-  }
-
-  init() {
-    if (this._db) return this;
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-
-    this._db = new DatabaseSync(DB_PATH);
-
-    // SQLite performance pragmas
-    this._db.exec('PRAGMA journal_mode=WAL;');
-    this._db.exec('PRAGMA synchronous=NORMAL;');
-    this._db.exec('PRAGMA foreign_keys=ON;');
-
-    this._initSchema();
-    this._seedIfEmpty();
-    console.log('[SQLite DB] Schema initialized successfully at', DB_PATH);
-    return this;
-  }
-
-  _initSchema() {
-    this._db.exec(`
-      CREATE TABLE IF NOT EXISTS sectors (
-        id TEXT PRIMARY KEY,
-        theater TEXT NOT NULL,
-        name TEXT NOT NULL,
-        short_name TEXT NOT NULL,
-        color TEXT NOT NULL,
-        description TEXT,
-        center_lat REAL NOT NULL,
-        center_lng REAL NOT NULL,
-        bounds_json TEXT NOT NULL,
-        status TEXT DEFAULT 'Active',
-        alert_level TEXT DEFAULT 'Normal',
-        created_at TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS incidents (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        location TEXT NOT NULL,
-        short_location TEXT,
-        area TEXT,
-        affected INTEGER DEFAULT 1,
-        severity TEXT DEFAULT 'High',
-        status TEXT DEFAULT 'Unverified',
-        response_summary TEXT,
-        response_detail TEXT,
-        description TEXT,
-        field_report TEXT,
-        contact_number TEXT,
-        citizen_name TEXT,
-        assigned_team TEXT,
-        eta TEXT,
-        substatus TEXT,
-        coordinates_json TEXT NOT NULL,
-        sector_id TEXT,
-        is_citizen_sos INTEGER DEFAULT 0,
-        created_at TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS teams (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        specialization TEXT,
-        status TEXT DEFAULT 'Available',
-        responders INTEGER DEFAULT 6,
-        task TEXT,
-        battery INTEGER DEFAULT 100,
-        eta TEXT,
-        lat REAL,
-        lng REAL,
-        sector_id TEXT,
-        updated_at TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS citizens (
-        id TEXT PRIMARY KEY,
-        full_name TEXT NOT NULL,
-        phone_number TEXT,
-        email TEXT,
-        blood_group TEXT,
-        sector_id TEXT,
-        lat REAL,
-        lng REAL,
-        last_seen TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS messages (
-        id TEXT PRIMARY KEY,
-        channel_id TEXT NOT NULL,
-        sender TEXT NOT NULL,
-        role TEXT NOT NULL,
-        initials TEXT,
-        is_self INTEGER DEFAULT 0,
-        time TEXT,
-        text TEXT,
-        location_tag TEXT,
-        attachment_url TEXT,
-        is_alert INTEGER DEFAULT 0,
-        sector_id TEXT,
-        created_at TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS alerts (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        code TEXT,
-        subtitle TEXT,
-        severity TEXT DEFAULT 'Critical',
-        recipients TEXT,
-        issued_by TEXT,
-        sector_id TEXT,
-        created_at TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS shelters (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        location TEXT,
-        capacity INTEGER DEFAULT 100,
-        occupied INTEGER DEFAULT 0,
-        lat REAL,
-        lng REAL,
-        sector_id TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS volunteers (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        phone TEXT,
-        email TEXT,
-        skills TEXT DEFAULT '[]',
-        sector_id TEXT,
-        status TEXT DEFAULT 'Available',
-        lat REAL,
-        lng REAL,
-        team_id TEXT,
-        registered_at TEXT DEFAULT (datetime('now')),
-        last_seen TEXT DEFAULT (datetime('now'))
-      );
-
-      CREATE TABLE IF NOT EXISTS telemetry (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        team_id TEXT NOT NULL,
-        team_name TEXT,
-        lat REAL NOT NULL,
-        lng REAL NOT NULL,
-        battery INTEGER DEFAULT 100,
-        signal TEXT DEFAULT 'Strong',
-        status TEXT DEFAULT 'Deployed',
-        altitude REAL,
-        speed REAL,
-        heading REAL,
-        recorded_at TEXT DEFAULT (datetime('now'))
-      );
-
-      CREATE TABLE IF NOT EXISTS sos_events (
-        id TEXT PRIMARY KEY,
-        team_id TEXT NOT NULL,
-        team_name TEXT,
-        operator_name TEXT,
-        lat REAL,
-        lng REAL,
-        location_text TEXT,
-        notes TEXT,
-        severity TEXT DEFAULT 'Critical',
-        resolved INTEGER DEFAULT 0,
-        incident_id TEXT,
-        triggered_at TEXT DEFAULT (datetime('now')),
-        resolved_at TEXT
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status);
-      CREATE INDEX IF NOT EXISTS idx_incidents_severity ON incidents(severity);
-      CREATE INDEX IF NOT EXISTS idx_incidents_sector ON incidents(sector_id);
-      CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id);
-      CREATE INDEX IF NOT EXISTS idx_telemetry_team ON telemetry(team_id);
-      CREATE INDEX IF NOT EXISTS idx_telemetry_time ON telemetry(recorded_at);
-      CREATE INDEX IF NOT EXISTS idx_sos_team ON sos_events(team_id);
-      CREATE INDEX IF NOT EXISTS idx_sos_resolved ON sos_events(resolved);
-      CREATE INDEX IF NOT EXISTS idx_volunteers_sector ON volunteers(sector_id);
-      CREATE INDEX IF NOT EXISTS idx_volunteers_status ON volunteers(status);
-    `);
-  }
-
-  _seedIfEmpty() {
-    const sectorCount = this.db.prepare('SELECT COUNT(*) as c FROM sectors').get().c;
-    if (sectorCount === 0) {
-      const insert = this.db.prepare(`
-        INSERT OR IGNORE INTO sectors (id, theater, name, short_name, color, description, center_lat, center_lng, bounds_json, status, alert_level, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-      `);
-      for (const s of INITIAL_SECTORS) {
-        insert.run(s.id, s.theater, s.name, s.short_name, s.color, s.description, s.center_lat, s.center_lng, JSON.stringify(s.bounds), s.status, s.alert_level);
+  get pool() {
+    if (!this._pool) {
+      if (!DATABASE_URL) {
+        throw new Error('DATABASE_URL environment variable is required');
       }
-      console.log(`[SQLite DB] Seeded ${INITIAL_SECTORS.length} sectors`);
+      this._pool = new Pool({
+        connectionString: DATABASE_URL,
+        ...(IS_PROD ? { ssl: { rejectUnauthorized: false } } : {})
+      });
     }
+    return this._pool;
+  }
 
-    const volCount = this.db.prepare('SELECT COUNT(*) as c FROM volunteers').get().c;
-    if (volCount === 0) {
-      const seedVols = [
-        { id: 'VOL-001', name: 'Ravi Sharma', phone: '+91 98110 11001', skills: ['First Aid', 'Search & Rescue', 'Communication'], sector_id: 'SEC-UK-01', status: 'Active', lat: 30.570, lng: 79.530 },
-        { id: 'VOL-002', name: 'Priya Singh', phone: '+91 98110 11002', skills: ['Medical', 'Trauma Care', 'Triage'], sector_id: 'SEC-UK-02', status: 'Active', lat: 30.568, lng: 79.588 },
-        { id: 'VOL-003', name: 'Arun Negi', phone: '+91 98110 11003', skills: ['Mountain Rescue', 'Rope Work', 'Navigation'], sector_id: 'SEC-UK-03', status: 'Available', lat: 30.527, lng: 79.590 },
-        { id: 'VOL-004', name: 'Sunita Rawat', phone: '+91 98110 11004', skills: ['Logistics', 'Supply Chain', 'Shelter Management'], sector_id: 'SEC-UK-04', status: 'Active', lat: 30.522, lng: 79.548 },
-        { id: 'VOL-005', name: 'Deepak Bisht', phone: '+91 98110 11005', skills: ['Drone Operation', 'Surveillance', 'Mapping'], sector_id: 'SEC-UK-01', status: 'Available', lat: 30.575, lng: 79.540 },
-        { id: 'VOL-006', name: 'Meena Joshi', phone: '+91 98110 11006', skills: ['Counseling', 'Community Liaison', 'Translation'], sector_id: 'SEC-UK-02', status: 'Resting', lat: 30.562, lng: 79.580 },
-      ];
-      const insert = this.db.prepare(`
-        INSERT OR IGNORE INTO volunteers (id, name, phone, skills, sector_id, status, lat, lng)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const v of seedVols) {
-        insert.run(v.id, v.name, v.phone, JSON.stringify(v.skills), v.sector_id, v.status, v.lat, v.lng);
+  async init() {
+    if (this._initPromise) return this._initPromise;
+    this._initPromise = (async () => {
+      const schemaPath = path.join(BACKEND_ROOT, 'db', 'schema.sql');
+      const schemaSql = fs.readFileSync(schemaPath, 'utf8');
+      await this.pool.query(schemaSql);
+      await this._seedReferenceData();
+      console.log('[PostgreSQL DB] Schema initialized and ready');
+      return this;
+    })();
+    return this._initPromise;
+  }
+
+  async close() {
+    if (!this._pool) return;
+    try {
+      await this._pool.end();
+    } catch (err) {
+      console.warn('[PostgreSQL DB] Error while closing:', err.message);
+    }
+    this._pool = null;
+    this._initPromise = null;
+  }
+
+  async query(sql, params = []) {
+    return this.pool.query(sql, params);
+  }
+
+  async tx(fn) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await fn(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (_) {
+        /* ignore rollback errors */
       }
-      console.log(`[SQLite DB] Seeded ${seedVols.length} volunteers`);
+      throw err;
+    } finally {
+      client.release();
     }
   }
 
-  findSectorForPoint(lat, lng) {
+  async _seedReferenceData() {
+    const secCount = Number((await this.query('SELECT COUNT(*) AS c FROM sectors')).rows[0].c);
+    if (secCount === 0) {
+      await this.tx(async (client) => {
+        for (const s of referenceSectors) {
+          await client.query(
+            `INSERT INTO sectors (id, theater, name, short_name, color, description, center_lat, center_lng, bounds_json, status, alert_level, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+             ON CONFLICT (id) DO NOTHING`,
+            [
+              s.id, s.theater, s.name, s.short_name, s.color, s.description,
+              s.center_lat, s.center_lng, JSON.stringify(s.bounds), s.status, s.alert_level, nowIso()
+            ]
+          );
+        }
+      });
+      console.log(`[PostgreSQL DB] Seeded ${referenceSectors.length} reference sectors`);
+    }
+
+    const shCount = Number((await this.query('SELECT COUNT(*) AS c FROM shelters')).rows[0].c);
+    if (shCount === 0) {
+      await this.tx(async (client) => {
+        for (const sh of referenceShelters) {
+          const sec = await this.getSectorById(sh.sector_id, client);
+          await client.query(
+            `INSERT INTO shelters (id, name, location, capacity, occupied, lat, lng, sector_id, amenities, has_medical, has_airlift)
+             VALUES ($1, $2, $3, $4, 0, $5, $6, $7, $8, $9, $10)
+             ON CONFLICT (id) DO NOTHING`,
+            [
+              sh.id, sh.name, sh.location, sh.capacity,
+              sec?.center.lat ?? null, sec?.center.lng ?? null,
+              sh.sector_id, sh.amenities, bool(sh.has_medical), bool(sh.has_airlift)
+            ]
+          );
+        }
+      });
+      console.log(`[PostgreSQL DB] Seeded ${referenceShelters.length} reference shelters`);
+    }
+
+    const volCount = Number((await this.query('SELECT COUNT(*) AS c FROM volunteers')).rows[0].c);
+    if (volCount === 0 && referenceVolunteers.length > 0) {
+      await this.tx(async (client) => {
+        for (const v of referenceVolunteers) {
+          await client.query(
+            `INSERT INTO volunteers (id, name, phone, email, skills, sector_id, status, lat, lng)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT (id) DO NOTHING`,
+            [
+              v.id, v.name, v.phone || '', v.email || '', JSON.stringify(v.skills || []),
+              v.sector_id || null, v.status || 'Available', v.lat ?? null, v.lng ?? null
+            ]
+          );
+        }
+      });
+      console.log(`[PostgreSQL DB] Seeded ${referenceVolunteers.length} reference volunteers`);
+    }
+  }
+
+  // =================== SECTORS ===================
+  async getSectors(theater) {
+    const res = theater
+      ? await this.query('SELECT * FROM sectors WHERE theater = $1 ORDER BY id', [theater])
+      : await this.query('SELECT * FROM sectors ORDER BY theater, id');
+    return res.rows.map((r) => this._parseSector(r));
+  }
+
+  async getSectorById(id, client = null) {
+    const runner = client || this.pool;
+    const res = await runner.query('SELECT * FROM sectors WHERE id = $1', [id]);
+    return res.rows[0] ? this._parseSector(res.rows[0]) : null;
+  }
+
+  async updateSector(id, { status, alertLevel } = {}) {
+    await this.query(
+      'UPDATE sectors SET status = COALESCE($1, status), alert_level = COALESCE($2, alert_level) WHERE id = $3',
+      [status ?? null, alertLevel ?? null, id]
+    );
+    return this.getSectorById(id);
+  }
+
+  async findSectorForPoint(lat, lng) {
     if (lat == null || lng == null) return null;
-    const sectors = this.db.prepare('SELECT * FROM sectors').all();
-    for (const sector of sectors) {
-      let bounds;
-      try { bounds = JSON.parse(sector.bounds_json || '[]'); } catch (_) { continue; }
-      if (!bounds || bounds.length < 4) continue;
-      const lats = bounds.map(b => b.lat);
-      const lngs = bounds.map(b => b.lng);
-      const minLat = Math.min(...lats), maxLat = Math.max(...lats);
-      const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
-      if (lat >= minLat && lat <= maxLat && lng >= minLng && lng <= maxLng) {
+    for (const sector of await this.getSectors()) {
+      const lats = sector.bounds.map((b) => b.lat);
+      const lngs = sector.bounds.map((b) => b.lng);
+      if (!lats.length) continue;
+      if (lat >= Math.min(...lats) && lat <= Math.max(...lats) && lng >= Math.min(...lngs) && lng <= Math.max(...lngs)) {
         return sector;
       }
     }
     return null;
   }
 
-  // =================== INCIDENTS ===================
-  getAllIncidents(filters = {}) {
-    let query = 'SELECT * FROM incidents';
+  _parseSector(r) {
+    let bounds = [];
+    try { bounds = JSON.parse(r.bounds_json || '[]'); } catch (_) { /* ignore */ }
+    return {
+      id: r.id,
+      theater: r.theater,
+      name: r.name,
+      shortName: r.short_name,
+      color: r.color,
+      description: r.description,
+      center: { lat: r.center_lat, lng: r.center_lng },
+      bounds,
+      status: r.status,
+      alertLevel: r.alert_level
+    };
+  }
+
+  // =================== TEAMS ===================
+  async createTeam({ name, callsign, specialization, responders, createdBy }) {
+    const id = `team-${crypto.randomBytes(5).toString('hex')}`;
+    const ts = nowIso();
+    await this.query(
+      `INSERT INTO teams (id, name, callsign, specialization, status, responders, created_by, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'Available', $5, $6, $7, $8)`,
+      [id, name, callsign || null, specialization || null, responders || 1, createdBy || null, ts, ts]
+    );
+    return this.getTeamById(id);
+  }
+
+  async findOrCreateTeam({ teamId, name, callsign, specialization, responders, createdBy }) {
+    if (teamId) {
+      const existingById = await this.getTeamById(teamId);
+      if (existingById) return { team: existingById, created: false };
+    }
+    if (name) {
+      const existingByName = await this.getTeamByName(name);
+      if (existingByName) return { team: existingByName, created: false };
+    }
+    const team = await this.createTeam({
+      name: name || `Rescue Unit ${shortId(4)}`,
+      callsign,
+      specialization,
+      responders,
+      createdBy
+    });
+    return { team, created: true };
+  }
+
+  async getTeamById(id) {
+    if (!id) return null;
+    const res = await this.query('SELECT * FROM teams WHERE id = $1', [id]);
+    return res.rows[0] ? this._parseTeam(res.rows[0]) : null;
+  }
+
+  async getTeamByName(name) {
+    if (!name) return null;
+    const res = await this.query('SELECT * FROM teams WHERE LOWER(name) = LOWER($1)', [name]);
+    return res.rows[0] ? this._parseTeam(res.rows[0]) : null;
+  }
+
+  async getAllTeams() {
+    const res = await this.query('SELECT * FROM teams ORDER BY LOWER(name)');
+    return res.rows.map((r) => this._parseTeam(r));
+  }
+
+  async updateTeam(id, patch, client = null) {
+    const map = {
+      status: 'status', battery: 'battery', task: 'task', eta: 'eta',
+      lat: 'lat', lng: 'lng', sectorId: 'sector_id', responders: 'responders'
+    };
+    const sets = [];
     const params = [];
-    const conditions = [];
-    if (filters.status && filters.status !== 'All') { conditions.push('status = ?'); params.push(filters.status); }
-    if (filters.sector_id) { conditions.push('sector_id = ?'); params.push(filters.sector_id); }
-    if (conditions.length) query += ' WHERE ' + conditions.join(' AND ');
-    query += ' ORDER BY created_at DESC';
-    return this.db.prepare(query).all(...params).map(r => this._parseIncident(r));
+    let idx = 1;
+    for (const [key, col] of Object.entries(map)) {
+      if (Object.prototype.hasOwnProperty.call(patch, key)) {
+        sets.push(`${col} = $${idx++}`);
+        params.push(patch[key] ?? null);
+      }
+    }
+    sets.push(`updated_at = $${idx++}`);
+    params.push(nowIso(), id);
+    const runner = client || this.pool;
+    await runner.query(`UPDATE teams SET ${sets.join(', ')} WHERE id = $${idx}`, params);
+    return this.getTeamById(id);
   }
 
-  getIncidentById(id) {
-    const r = this.db.prepare('SELECT * FROM incidents WHERE id = ?').get(id);
-    return r ? this._parseIncident(r) : null;
+  async recordTelemetry(team, { lat, lng, battery, signal, status, altitude, speed, heading }) {
+    await this.tx(async (client) => {
+      await client.query(
+        `INSERT INTO telemetry (team_id, team_name, lat, lng, battery, signal, status, altitude, speed, heading, recorded_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [
+          team.id, team.name, lat, lng, battery ?? team.battery ?? null, signal ?? null,
+          status ?? team.status ?? null, altitude ?? null, speed ?? null, heading ?? null, nowIso()
+        ]
+      );
+      await client.query(
+        `DELETE FROM telemetry WHERE team_id = $1 AND id <= (
+           SELECT id FROM telemetry WHERE team_id = $1 ORDER BY id DESC LIMIT 1 OFFSET 500
+         )`,
+        [team.id]
+      );
+    });
   }
 
-  addIncident(data) {
-    const id = data.id || `INC-${Date.now()}`;
-    const coords = data.coordinates || {};
-    const lat = typeof coords.latitude === 'number' ? coords.latitude : (typeof coords.lat === 'number' ? coords.lat : (parseFloat(coords.lat) || 30.5593));
-    const lng = typeof coords.longitude === 'number' ? coords.longitude : (typeof coords.lng === 'number' ? coords.lng : (parseFloat(coords.lng) || 79.5644));
-    const sector = this.findSectorForPoint(lat, lng);
-
-    this.db.prepare(`
-      INSERT OR REPLACE INTO incidents (
-        id, title, location, short_location, area, affected, severity, status,
-        response_summary, response_detail, description, field_report,
-        contact_number, citizen_name, assigned_team, eta, substatus,
-        coordinates_json, sector_id, is_citizen_sos, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    `).run(
-      id,
-      data.title || 'Incident',
-      data.location || data.fullAddress || '',
-      data.shortLocation || data.location || '',
-      data.area || data.location || '',
-      data.affected || data.affectedCount || 1,
-      data.severity || 'Medium',
-      data.status || 'Active',
-      data.responseSummary || data.substatus || '',
-      data.responseDetail || '',
-      data.description || '',
-      data.fieldReport || '',
-      data.contactNumber || '',
-      data.citizenName || '',
-      data.assignedTeam || null,
-      data.eta || null,
-      data.substatus || '',
-      JSON.stringify(coords),
-      sector?.id || (typeof data.sectorId === 'object' ? data.sectorId?.id : data.sectorId) || 'SEC-UK-01',
-      data.isCitizenSOS ? 1 : 0
+  async getLatestTelemetry() {
+    const res = await this.query(
+      `SELECT * FROM telemetry WHERE id IN (SELECT MAX(id) FROM telemetry GROUP BY team_id) ORDER BY recorded_at DESC`
     );
-
-    return this.getIncidentById(id);
+    return res.rows.map((r) => this._parseTelemetry(r));
   }
 
-  insertIncident(data) {
-    return this.addIncident(data);
+  async getTelemetryHistory(teamId, limit = 100) {
+    const res = await this.query('SELECT * FROM telemetry WHERE team_id = $1 ORDER BY id DESC LIMIT $2', [teamId, limit]);
+    return res.rows.map((r) => this._parseTelemetry(r));
   }
 
-  updateIncident(id, data = {}) {
-    const existing = this.db.prepare('SELECT * FROM incidents WHERE id = ?').get(id);
-    if (!existing) return null;
-    this.db.prepare(`
-      UPDATE incidents SET
-        status = COALESCE(?, status),
-        substatus = COALESCE(?, substatus),
-        assigned_team = COALESCE(?, assigned_team),
-        eta = COALESCE(?, eta),
-        response_summary = COALESCE(?, response_summary),
-        response_detail = COALESCE(?, response_detail)
-      WHERE id = ?
-    `).run(
-      data.status ?? null,
-      data.substatus ?? null,
-      data.assignedTeam ?? null,
-      data.eta ?? null,
-      data.responseSummary ?? null,
-      data.responseDetail ?? null,
-      id
+  _parseTelemetry(r) {
+    return {
+      id: r.id, teamId: r.team_id, teamName: r.team_name, lat: r.lat, lng: r.lng,
+      battery: r.battery, signal: r.signal, status: r.status,
+      altitude: r.altitude, speed: r.speed, heading: r.heading, recordedAt: r.recorded_at
+    };
+  }
+
+  _parseTeam(r) {
+    const hasFix = r.lat != null && r.lng != null;
+    return {
+      id: r.id,
+      name: r.name,
+      callsign: r.callsign,
+      specialization: r.specialization,
+      type: r.specialization || 'SAR',
+      status: r.status,
+      responders: r.responders,
+      task: r.task,
+      battery: r.battery,
+      eta: r.eta,
+      coordinates: hasFix ? { lat: r.lat, lng: r.lng, latitude: r.lat, longitude: r.lng } : null,
+      sectorId: r.sector_id,
+      createdAt: r.created_at,
+      lastUpdate: r.updated_at
+    };
+  }
+
+  // =================== INCIDENTS & ASSIGNMENTS ===================
+  generateIncidentId() {
+    const d = new Date();
+    const stamp = `${String(d.getFullYear()).slice(-2)}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    return `RQ-${stamp}-${shortId(5)}`;
+  }
+
+  async insertIncident(data) {
+    const ts = nowIso();
+    const requestedResourcesJson = JSON.stringify(
+      Array.isArray(data.requestedResources) ? data.requestedResources : []
     );
+    await this.query(
+      `INSERT INTO incidents (
+         id, title, type, location, short_location, area, affected, severity, status,
+         response_summary, response_detail, description, field_report, contact_number,
+         citizen_name, citizen_user_id, assigned_team, assigned_team_id, eta, substatus,
+         coordinates_json, lat, lng, sector_id, is_citizen_sos, is_rescue_sos, requested_resources_json, created_by, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, '{}', $21, $22, $23, $24, $25, $26, $27, $28, $29)`,
+      [
+        data.id, data.title, data.type ?? null, data.location ?? '', data.shortLocation ?? '', data.area ?? '',
+        data.affected ?? 1, data.severity, data.status,
+        data.responseSummary ?? '', data.responseDetail ?? '', data.description ?? '', data.fieldReport ?? '',
+        data.contactNumber ?? '', data.citizenName ?? '', data.citizenUserId ?? null,
+        data.assignedTeam ?? null, data.assignedTeamId ?? null, data.eta ?? null, data.substatus ?? '',
+        data.lat ?? null, data.lng ?? null, data.sectorId ?? null,
+        bool(data.isCitizenSOS), bool(data.isRescueSOS), requestedResourcesJson, data.createdBy ?? null, ts, ts
+      ]
+    );
+    return this.getIncidentById(data.id);
+  }
+
+  async getIncidentById(id) {
+    if (!id) return null;
+    const res = await this.query('SELECT * FROM incidents WHERE id = $1', [id]);
+    return res.rows[0] ? this._parseIncident(res.rows[0]) : null;
+  }
+
+  async getAllIncidents({ status, citizenUserId, assignedTeamId } = {}) {
+    const where = [];
+    const params = [];
+    let idx = 1;
+    if (status && status !== 'All') { where.push(`LOWER(status) = LOWER($${idx++})`); params.push(status); }
+    if (citizenUserId) { where.push(`citizen_user_id = $${idx++}`); params.push(citizenUserId); }
+    if (assignedTeamId) { where.push(`assigned_team_id = $${idx++}`); params.push(assignedTeamId); }
+    const sql = `SELECT * FROM incidents ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC`;
+    const res = await this.query(sql, params);
+    return res.rows.map((r) => this._parseIncident(r));
+  }
+
+  async countActiveIncidentsForTeam(teamId) {
+    const res = await this.query(
+      "SELECT COUNT(*) AS c FROM incidents WHERE assigned_team_id = $1 AND status != 'Resolved'",
+      [teamId]
+    );
+    return Number(res.rows[0].c);
+  }
+
+  async updateIncident(id, patch, client = null) {
+    const map = {
+      status: 'status', substatus: 'substatus', assignedTeam: 'assigned_team', assignedTeamId: 'assigned_team_id',
+      eta: 'eta', responseSummary: 'response_summary', responseDetail: 'response_detail', fieldReport: 'field_report'
+    };
+    const sets = [];
+    const params = [];
+    let idx = 1;
+    for (const [key, col] of Object.entries(map)) {
+      if (Object.prototype.hasOwnProperty.call(patch, key)) {
+        sets.push(`${col} = $${idx++}`);
+        params.push(patch[key] ?? null);
+      }
+    }
+    sets.push(`updated_at = $${idx++}`);
+    params.push(nowIso(), id);
+    const runner = client || this.pool;
+    await runner.query(`UPDATE incidents SET ${sets.join(', ')} WHERE id = $${idx}`, params);
     return this.getIncidentById(id);
   }
 
-  updateIncidentStatus(id, status, notes, teamName) {
-    const existing = this.db.prepare('SELECT * FROM incidents WHERE id = ?').get(id);
-    if (!existing) return null;
-    this.db.prepare(`
-      UPDATE incidents SET status = ?, substatus = ?, assigned_team = COALESCE(?, assigned_team) WHERE id = ?
-    `).run(status, notes || existing.substatus, teamName || null, id);
-    return this.getIncidentById(id);
+  async assignTeamAtomic({ incidentId, teamId, eta, notes, teamName, fieldReport }) {
+    return this.tx(async (client) => {
+      const assignRes = await client.query(
+        'SELECT * FROM assign_team($1, $2, $3, $4)',
+        [incidentId, teamId, eta ?? null, notes ?? null]
+      );
+      await client.query(
+        `UPDATE incidents
+         SET status = 'Responding',
+             assigned_team = $1,
+             assigned_team_id = $2,
+             eta = COALESCE($3, eta),
+             response_summary = $1,
+             response_detail = $4,
+             substatus = $5,
+             field_report = COALESCE($6, field_report),
+             updated_at = $7
+         WHERE id = $8`,
+        [
+          teamName,
+          teamId,
+          eta ?? null,
+          `ETA ${eta || '10 min'}`,
+          `${teamName} dispatched · ETA ${eta || '10 min'}`,
+          fieldReport ?? null,
+          nowIso(),
+          incidentId
+        ]
+      );
+      await client.query(
+        `UPDATE teams SET status = 'Deployed', task = $1, eta = $2, updated_at = $3 WHERE id = $4`,
+        [incidentId, `ETA ${eta || '10 min'}`, nowIso(), teamId]
+      );
+      return assignRes.rows[0];
+    });
   }
 
-  verifyIncident(id) {
-    this.db.prepare(`UPDATE incidents SET status = 'Verified' WHERE id = ?`).run(id);
-    return this.getIncidentById(id);
+  async markAssignmentOnSite(incidentId, teamId) {
+    if (!incidentId || !teamId) return;
+    await this.query(
+      `UPDATE assignments SET status = 'On site' WHERE incident_id = $1 AND team_id = $2 AND status = 'Assigned'`,
+      [incidentId, teamId]
+    );
   }
 
-  assignTeam(id, teamName, eta, notes) {
-    const inc = this.getIncidentById(id);
-    if (!inc) return null;
-    this.db.prepare(`UPDATE incidents SET assigned_team = ?, eta = ?, status = 'Responding', substatus = ? WHERE id = ?`)
-      .run(teamName, eta || '10 min', notes || `${teamName} dispatched · ETA ${eta || '10 min'}`, id);
-    const updatedInc = this.getIncidentById(id);
-    const team = this.db.prepare('SELECT * FROM teams WHERE name = ?').get(teamName);
-    return { incident: updatedInc, team: team ? this._parseTeam(team) : null };
+  async resolveIncidentAtomic(incidentId, teamId) {
+    return this.tx(async (client) => {
+      if (teamId) {
+        const activeAssign = await client.query(
+          `SELECT 1 FROM assignments WHERE incident_id = $1 AND team_id = $2 AND status IN ('Assigned', 'On site') LIMIT 1`,
+          [incidentId, teamId]
+        );
+        if (activeAssign.rowCount > 0) {
+          await client.query('SELECT * FROM complete_assignment($1, $2)', [incidentId, teamId]);
+        }
+      }
+      const relRes = await client.query('SELECT release_incident_resources($1) AS released', [incidentId]);
+      return Number(relRes.rows[0]?.released || 0);
+    });
+  }
+
+  async getResourcesSnapshot() {
+    const resRows = await this.query('SELECT id, name, total, available FROM resources ORDER BY id');
+    const allocRows = await this.query(
+      'SELECT incident_id, resource_id, quantity, max_need FROM resource_allocations WHERE released_at IS NULL'
+    );
+    return { resources: resRows.rows, allocations: allocRows.rows };
+  }
+
+  async allocateResourcesBatch(incidentId, items) {
+    return this.tx(async (client) => {
+      const allocated = [];
+      for (const { resourceId, quantity, maxNeed } of items) {
+        const res = await client.query(
+          'SELECT * FROM allocate_resource($1, $2, $3, $4)',
+          [incidentId, resourceId, quantity, maxNeed ?? quantity]
+        );
+        allocated.push(res.rows[0]);
+      }
+      return allocated;
+    });
   }
 
   _parseIncident(r) {
-    let coords = {};
-    try { coords = JSON.parse(r.coordinates_json || '{}'); } catch (_) {}
+    const hasFix = r.lat != null && r.lng != null;
     return {
       id: r.id,
       title: r.title,
+      type: r.type,
       location: r.location,
       shortLocation: r.short_location || r.location,
       area: r.area || r.location,
@@ -533,191 +497,168 @@ class DatabaseManager {
       fieldReport: r.field_report,
       contactNumber: r.contact_number,
       citizenName: r.citizen_name,
+      citizenUserId: r.citizen_user_id,
       assignedTeam: r.assigned_team,
+      assignedTeamId: r.assigned_team_id,
       teamAssigned: r.assigned_team,
       eta: r.eta,
       substatus: r.substatus,
-      coordinates: coords,
+      coordinates: hasFix ? { lat: r.lat, lng: r.lng, latitude: r.lat, longitude: r.lng } : null,
       sectorId: r.sector_id,
       isCitizenSOS: r.is_citizen_sos === 1,
-      createdAt: r.created_at
-    };
-  }
-
-  // =================== TEAMS ===================
-  getAllTeams() {
-    return this.db.prepare('SELECT * FROM teams ORDER BY name').all().map(r => this._parseTeam(r));
-  }
-
-  getTeamById(id) {
-    const r = this.db.prepare('SELECT * FROM teams WHERE id = ? OR name = ?').get(id, id);
-    return r ? this._parseTeam(r) : null;
-  }
-
-  updateTeamTelemetry(teamId, { lat, lng, battery, status, signal, altitude, speed, heading } = {}) {
-    const cleanId = (teamId || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-    let team = this.db.prepare('SELECT * FROM teams WHERE id = ? OR name = ?').get(teamId, teamId);
-    if (!team) {
-      const all = this.db.prepare('SELECT * FROM teams').all();
-      team = all.find(t => {
-        const tIdClean = t.id.toLowerCase().replace(/[^a-z0-9]/g, '');
-        const tNameClean = t.name.toLowerCase().replace(/[^a-z0-9]/g, '');
-        return (cleanId && (tIdClean.includes(cleanId) || cleanId.includes(tIdClean) ||
-               tNameClean.includes(cleanId) || cleanId.includes(tNameClean)));
-      });
-    }
-
-    if (!team && lat != null && lng != null) {
-      const newId = (teamId || 'unit-01').toLowerCase().replace(/\s+/g, '-');
-      this.db.prepare(`
-        INSERT OR IGNORE INTO teams (id, name, specialization, status, battery, lat, lng, updated_at)
-        VALUES (?, ?, 'Field Response', ?, ?, ?, ?, datetime('now'))
-      `).run(newId, teamId || 'Field Team', status || 'Deployed', battery ?? 100, lat, lng);
-      team = this.db.prepare('SELECT * FROM teams WHERE id = ?').get(newId);
-    }
-
-    if (!team) return null;
-
-    if (lat != null && lng != null) {
-      this.db.prepare(`UPDATE teams SET lat = ?, lng = ?, battery = COALESCE(?, battery), status = COALESCE(?, status), updated_at = datetime('now') WHERE id = ?`)
-        .run(lat, lng, battery ?? null, status ?? null, team.id);
-
-      // Log to telemetry time-series
-      this.db.prepare(`
-        INSERT INTO telemetry (team_id, team_name, lat, lng, battery, status, signal, altitude, speed, heading)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(team.id, team.name, lat, lng, battery ?? team.battery, status ?? team.status, signal ?? 'Strong', altitude ?? null, speed ?? null, heading ?? null);
-
-      // Keep only last 500 telemetry records per team
-      this.db.prepare(`DELETE FROM telemetry WHERE team_id = ? AND id NOT IN (SELECT id FROM telemetry WHERE team_id = ? ORDER BY recorded_at DESC LIMIT 500)`)
-        .run(team.id, team.id);
-    }
-
-    return this.getTeamById(team.id);
-  }
-
-  getLatestTelemetry() {
-    return this.db.prepare(`
-      SELECT t.*, tm.name as team_name_full FROM telemetry t
-      INNER JOIN (SELECT team_id, MAX(recorded_at) as max_time FROM telemetry GROUP BY team_id) latest
-      ON t.team_id = latest.team_id AND t.recorded_at = latest.max_time
-      LEFT JOIN teams tm ON t.team_id = tm.id
-      ORDER BY t.recorded_at DESC
-    `).all();
-  }
-
-  getTelemetryHistory(teamId, limit = 100) {
-    return this.db.prepare('SELECT * FROM telemetry WHERE team_id = ? ORDER BY recorded_at DESC LIMIT ?').all(teamId, limit);
-  }
-
-  _parseTeam(r) {
-    return {
-      id: r.id,
-      name: r.name,
-      specialization: r.specialization,
-      type: r.specialization || 'SAR',
-      status: r.status,
-      responders: r.responders,
-      task: r.task,
-      battery: r.battery,
-      eta: r.eta,
-      coordinates: { lat: r.lat, lng: r.lng, latitude: r.lat, longitude: r.lng },
-      lat: r.lat,
-      lng: r.lng,
-      sectorId: r.sector_id,
-      lastUpdate: r.updated_at
+      isRescueSOS: r.is_rescue_sos === 1,
+      requestedResources: (() => {
+        try {
+          const parsed = JSON.parse(r.requested_resources_json || '[]');
+          return Array.isArray(parsed) ? parsed : [];
+        } catch {
+          return [];
+        }
+      })(),
+      createdAt: r.created_at,
+      updatedAt: r.updated_at
     };
   }
 
   // =================== SOS EVENTS ===================
-  createSosEvent({ teamId, teamName, operatorName, lat, lng, locationText, notes, incidentId } = {}) {
-    const id = `SOS-${Date.now()}`;
-    this.db.prepare(`
-      INSERT INTO sos_events (id, team_id, team_name, operator_name, lat, lng, location_text, notes, incident_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, teamId, teamName || '', operatorName || '', lat || null, lng || null, locationText || '', notes || '', incidentId || null);
-    return this.db.prepare('SELECT * FROM sos_events WHERE id = ?').get(id);
+  async createSosEvent({ teamId, teamName, operatorName, lat, lng, locationText, notes, incidentId }) {
+    const id = `SOSEV-${shortId(8)}`;
+    await this.query(
+      `INSERT INTO sos_events (id, team_id, team_name, operator_name, lat, lng, location_text, notes, incident_id, triggered_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [id, teamId, teamName || '', operatorName || '', lat ?? null, lng ?? null, locationText || '', notes || '', incidentId || null, nowIso()]
+    );
+    return this.getSosEvent(id);
   }
 
-  resolveSosEvent(id) {
-    this.db.prepare(`UPDATE sos_events SET resolved = 1, resolved_at = datetime('now') WHERE id = ?`).run(id);
-    return this.db.prepare('SELECT * FROM sos_events WHERE id = ?').get(id);
+  async getSosEvent(id) {
+    const res = await this.query('SELECT * FROM sos_events WHERE id = $1', [id]);
+    return res.rows[0] ? this._parseSos(res.rows[0]) : null;
   }
 
-  getActiveSosEvents() {
-    return this.db.prepare('SELECT * FROM sos_events WHERE resolved = 0 ORDER BY triggered_at DESC').all();
+  async resolveSosEvent(id) {
+    await this.query('UPDATE sos_events SET resolved = 1, resolved_at = $1 WHERE id = $2 AND resolved = 0', [nowIso(), id]);
+    return this.getSosEvent(id);
+  }
+
+  async getActiveSosEvents() {
+    const res = await this.query('SELECT * FROM sos_events WHERE resolved = 0 ORDER BY triggered_at DESC');
+    return res.rows.map((r) => this._parseSos(r));
+  }
+
+  _parseSos(r) {
+    return {
+      id: r.id, teamId: r.team_id, teamName: r.team_name, operatorName: r.operator_name,
+      lat: r.lat, lng: r.lng, locationText: r.location_text, notes: r.notes, severity: r.severity,
+      resolved: r.resolved === 1, incidentId: r.incident_id, triggeredAt: r.triggered_at, resolvedAt: r.resolved_at
+    };
   }
 
   // =================== VOLUNTEERS ===================
-  getAllVolunteers(filters = {}) {
-    let query = 'SELECT * FROM volunteers';
+  async getAllVolunteers({ sectorId, status } = {}) {
+    const where = [];
     const params = [];
-    const conditions = [];
-    if (filters.sector_id) { conditions.push('sector_id = ?'); params.push(filters.sector_id); }
-    if (filters.status) { conditions.push('status = ?'); params.push(filters.status); }
-    if (conditions.length) query += ' WHERE ' + conditions.join(' AND ');
-    query += ' ORDER BY registered_at DESC';
-    return this.db.prepare(query).all(...params).map(r => this._parseVolunteer(r));
+    let idx = 1;
+    if (sectorId) { where.push(`sector_id = $${idx++}`); params.push(sectorId); }
+    if (status) { where.push(`status = $${idx++}`); params.push(status); }
+    const sql = `SELECT * FROM volunteers ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY registered_at DESC`;
+    const res = await this.query(sql, params);
+    return res.rows.map((r) => this._parseVolunteer(r));
   }
 
-  addVolunteer(data) {
-    const id = data.id || `VOL-${Date.now()}`;
-    this.db.prepare(`
-      INSERT OR REPLACE INTO volunteers (id, name, phone, email, skills, sector_id, status, lat, lng, team_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, data.name, data.phone || '', data.email || '', JSON.stringify(data.skills || []), data.sectorId || null, data.status || 'Available', data.lat || null, data.lng || null, data.teamId || null);
-    return this.db.prepare('SELECT * FROM volunteers WHERE id = ?').get(id);
+  async getVolunteerById(id) {
+    const res = await this.query('SELECT * FROM volunteers WHERE id = $1', [id]);
+    return res.rows[0] ? this._parseVolunteer(res.rows[0]) : null;
   }
 
-  updateVolunteerStatus(id, status) {
-    this.db.prepare(`UPDATE volunteers SET status = ?, last_seen = datetime('now') WHERE id = ?`).run(status, id);
-    return this.db.prepare('SELECT * FROM volunteers WHERE id = ?').get(id);
+  async getVolunteerByUser(userId) {
+    const res = await this.query('SELECT * FROM volunteers WHERE user_id = $1', [userId]);
+    return res.rows[0] ? this._parseVolunteer(res.rows[0]) : null;
+  }
+
+  async upsertVolunteerForUser(userId, data) {
+    const existing = await this.query('SELECT id FROM volunteers WHERE user_id = $1', [userId]);
+    const ts = nowIso();
+    if (existing.rows[0]) {
+      const vid = existing.rows[0].id;
+      await this.query(
+        `UPDATE volunteers SET name = $1, phone = $2, email = $3, skills = $4, sector_id = $5, lat = $6, lng = $7, team_id = $8, last_seen = $9
+         WHERE id = $10`,
+        [
+          data.name, data.phone || '', data.email || '', JSON.stringify(data.skills || []),
+          data.sectorId ?? null, data.lat ?? null, data.lng ?? null, data.teamId ?? null, ts, vid
+        ]
+      );
+      return this.getVolunteerById(vid);
+    }
+    const id = `VOL-${shortId(8)}`;
+    await this.query(
+      `INSERT INTO volunteers (id, user_id, name, phone, email, skills, sector_id, status, lat, lng, team_id, registered_at, last_seen)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'Available', $8, $9, $10, $11, $12)`,
+      [
+        id, userId, data.name, data.phone || '', data.email || '', JSON.stringify(data.skills || []),
+        data.sectorId ?? null, data.lat ?? null, data.lng ?? null, data.teamId ?? null, ts, ts
+      ]
+    );
+    return this.getVolunteerById(id);
+  }
+
+  async updateVolunteerStatus(id, status) {
+    await this.query('UPDATE volunteers SET status = $1, last_seen = $2 WHERE id = $3', [status, nowIso(), id]);
+    return this.getVolunteerById(id);
   }
 
   _parseVolunteer(r) {
     let skills = [];
-    try { skills = JSON.parse(r.skills || '[]'); } catch (_) {}
+    try { skills = JSON.parse(r.skills || '[]'); } catch (_) { /* ignore */ }
     return {
-      id: r.id,
-      name: r.name,
-      phone: r.phone,
-      email: r.email,
-      skills,
-      sectorId: r.sector_id,
-      status: r.status,
-      lat: r.lat,
-      lng: r.lng,
-      teamId: r.team_id,
-      registeredAt: r.registered_at,
-      lastSeen: r.last_seen
+      id: r.id, userId: r.user_id, name: r.name, phone: r.phone, email: r.email, skills,
+      sectorId: r.sector_id, status: r.status, lat: r.lat, lng: r.lng, teamId: r.team_id,
+      registeredAt: r.registered_at, lastSeen: r.last_seen
     };
   }
 
   // =================== MESSAGES ===================
-  getMessages(channel = 'all') {
-    if (channel === 'all' || !channel) {
-      return this.db.prepare('SELECT * FROM messages ORDER BY created_at ASC LIMIT 200').all().map(r => this._parseMessage(r));
-    }
-    return this.db.prepare('SELECT * FROM messages WHERE channel_id = ? ORDER BY created_at ASC LIMIT 100').all(channel).map(r => this._parseMessage(r));
-  }
-
-  addMessage(channel, data) {
-    const id = data.id || `MSG-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const timeStr = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
-    this.db.prepare(`
-      INSERT INTO messages (id, channel_id, sender, role, text, location_tag, is_alert, initials, is_self, time, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    `).run(
-      id, channel || 'ernakulam-command', data.sender || 'System', data.role || 'Operative',
-      data.text, data.locationTag || '', data.isAlert ? 1 : 0, data.initials || 'HQ',
-      data.isSelf ? 1 : 0, timeStr
+  async insertMessage({ id, channel, sender, senderId, senderRole, role, initials, text, locationTag, isAlert }) {
+    const mid = id || `MSG-${Date.now()}-${shortId(4)}`;
+    const time = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
+    await this.query(
+      `INSERT INTO messages (id, channel_id, sender, sender_id, sender_role, role, initials, is_self, time, text, location_tag, is_alert, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9, $10, $11, $12)
+       ON CONFLICT (id) DO NOTHING`,
+      [mid, channel, sender, senderId ?? null, senderRole ?? null, role, initials ?? '', time, text, locationTag || '', bool(isAlert), nowIso()]
     );
-    return { channel, message: this._parseMessage(this.db.prepare('SELECT * FROM messages WHERE id = ?').get(id)) };
+    return this.getMessageById(mid);
   }
 
-  insertMessage(data = {}) {
-    const channel = data.channelId || data.channel || 'ernakulam-command';
-    return this.addMessage(channel, data).message;
+  async getMessageById(id) {
+    const res = await this.query('SELECT * FROM messages WHERE id = $1', [id]);
+    return res.rows[0] ? this._parseMessage(res.rows[0]) : null;
+  }
+
+  async getChannelMessages(channel, { limit = 100, since } = {}) {
+    const res = since
+      ? await this.query(
+          `SELECT * FROM (
+             SELECT * FROM messages WHERE channel_id = $1 AND created_at > $2 ORDER BY created_at DESC LIMIT $3
+           ) sub ORDER BY created_at ASC`,
+          [channel, since, limit]
+        )
+      : await this.query(
+          `SELECT * FROM (
+             SELECT * FROM messages WHERE channel_id = $1 ORDER BY created_at DESC LIMIT $2
+           ) sub ORDER BY created_at ASC`,
+          [channel, limit]
+        );
+    return res.rows.map((r) => this._parseMessage(r));
+  }
+
+  async getAllMessages({ limit = 500 } = {}) {
+    const res = await this.query(
+      `SELECT * FROM (SELECT * FROM messages ORDER BY created_at DESC LIMIT $1) sub ORDER BY created_at ASC`,
+      [limit]
+    );
+    return res.rows.map((r) => this._parseMessage(r));
   }
 
   _parseMessage(r) {
@@ -726,88 +667,110 @@ class DatabaseManager {
       channel: r.channel_id,
       channelId: r.channel_id,
       sender: r.sender,
+      senderId: r.sender_id,
+      senderRole: r.sender_role,
       role: r.role,
+      initials: r.initials,
       text: r.text,
       locationTag: r.location_tag,
       isAlert: r.is_alert === 1,
-      initials: r.initials,
-      isSelf: r.is_self === 1,
       time: r.time,
-      timestamp: r.created_at || r.time
+      timestamp: r.created_at,
+      createdAt: r.created_at
     };
   }
 
   // =================== ALERTS ===================
-  getAlerts() {
-    return this.db.prepare('SELECT * FROM alerts ORDER BY created_at DESC LIMIT 50').all();
+  async insertAlert({ title, code, subtitle, severity, recipients, audience, issuedBy, sectorId, source, externalId }) {
+    const id = `ALT-${Date.now()}-${shortId(3)}`;
+    if (source && externalId) {
+      const res = await this.query(
+        `INSERT INTO alerts (id, title, code, subtitle, severity, recipients, audience, issued_by, sector_id, source, external_id, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         ON CONFLICT (source, external_id) WHERE source IS NOT NULL AND external_id IS NOT NULL DO NOTHING
+         RETURNING *`,
+        [id, title, code || null, subtitle || '', severity || 'Critical', recipients || '', audience || 'all', issuedBy || '', sectorId ?? null, source, externalId, nowIso()]
+      );
+      return res.rows[0] ? this._parseAlert(res.rows[0]) : null;
+    }
+    const res = await this.query(
+      `INSERT INTO alerts (id, title, code, subtitle, severity, recipients, audience, issued_by, sector_id, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING *`,
+      [id, title, code || null, subtitle || '', severity || 'Critical', recipients || '', audience || 'all', issuedBy || '', sectorId ?? null, nowIso()]
+    );
+    return this._parseAlert(res.rows[0]);
   }
 
-  getAllAlerts() {
-    return this.getAlerts();
+  async getAlerts({ audiences, limit = 50 } = {}) {
+    const res = audiences?.length
+      ? await this.query(
+          `SELECT * FROM alerts WHERE audience = ANY($1::text[]) ORDER BY created_at DESC LIMIT $2`,
+          [audiences, limit]
+        )
+      : await this.query('SELECT * FROM alerts ORDER BY created_at DESC LIMIT $1', [limit]);
+    return res.rows.map((r) => this._parseAlert(r));
   }
 
-  addAlert(data) {
-    const id = `ALT-${Date.now()}`;
-    this.db.prepare(`INSERT INTO alerts (id, title, subtitle, severity, recipients, issued_by, created_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`)
-      .run(id, data.title, data.subtitle || '', data.severity || 'Critical', data.recipients || 'ALL', data.issuedBy || 'HQ');
-    return this.db.prepare('SELECT * FROM alerts WHERE id = ?').get(id);
-  }
-
-  insertAlert(data = {}) {
-    return this.addAlert(data);
-  }
-
-  // =================== SHELTERS ===================
-  getShelters() {
-    return this.db.prepare('SELECT * FROM shelters ORDER BY name').all().map(r => ({
-      ...r,
-      coordinates: { lat: r.lat, lng: r.lng, latitude: r.lat, longitude: r.lng }
-    }));
-  }
-
-  getAllShelters() {
-    return this.getShelters();
-  }
-
-  // =================== SECTORS ===================
-  getAllSectors(theater) {
-    if (theater) return this.db.prepare('SELECT * FROM sectors WHERE theater = ? ORDER BY id').all(theater);
-    return this.db.prepare('SELECT * FROM sectors ORDER BY theater, id').all();
-  }
-
-  getSectors(theater) {
-    return this.getAllSectors(theater);
-  }
-
-  getSectorById(id) {
-    return this.db.prepare('SELECT * FROM sectors WHERE id = ?').get(id);
-  }
-
-  updateSector(id, { status, alert_level } = {}) {
-    this.db.prepare(`UPDATE sectors SET status = COALESCE(?, status), alert_level = COALESCE(?, alert_level) WHERE id = ?`)
-      .run(status ?? null, alert_level ?? null, id);
-    return this.getSectorById(id);
-  }
-
-  // =================== STATS ===================
-  getStats() {
+  _parseAlert(r) {
     return {
-      incidents: this.db.prepare('SELECT COUNT(*) as c FROM incidents').get().c,
-      active_incidents: this.db.prepare("SELECT COUNT(*) as c FROM incidents WHERE status != 'Resolved'").get().c,
-      teams: this.db.prepare('SELECT COUNT(*) as c FROM teams').get().c,
-      sectors: this.db.prepare('SELECT COUNT(*) as c FROM sectors').get().c,
-      messages: this.db.prepare('SELECT COUNT(*) as c FROM messages').get().c,
-      volunteers: this.db.prepare('SELECT COUNT(*) as c FROM volunteers').get().c,
-      active_volunteers: this.db.prepare("SELECT COUNT(*) as c FROM volunteers WHERE status IN ('Active','Available')").get().c,
-      sos_active: this.db.prepare('SELECT COUNT(*) as c FROM sos_events WHERE resolved = 0').get().c,
-      telemetry_records: this.db.prepare('SELECT COUNT(*) as c FROM telemetry').get().c,
-      db_path: DB_PATH
+      id: r.id,
+      title: r.title,
+      code: r.code,
+      subtitle: r.subtitle,
+      message: r.subtitle,
+      severity: r.severity,
+      recipients: r.recipients,
+      audience: r.audience || 'all',
+      issuedBy: r.issued_by,
+      sectorId: r.sector_id,
+      source: r.source || null,
+      externalId: r.external_id || null,
+      createdAt: r.created_at
     };
   }
 
-  getDatabaseStats() {
-    return this.getStats();
+  // =================== SHELTERS ===================
+  async getShelters() {
+    const res = await this.query('SELECT * FROM shelters ORDER BY name');
+    return res.rows.map((r) => this._parseShelter(r));
+  }
+
+  async getShelterById(id) {
+    const res = await this.query('SELECT * FROM shelters WHERE id = $1', [id]);
+    return res.rows[0] ? this._parseShelter(res.rows[0]) : null;
+  }
+
+  async updateShelterOccupancy(id, occupied) {
+    await this.query('UPDATE shelters SET occupied = $1 WHERE id = $2', [occupied, id]);
+    return this.getShelterById(id);
+  }
+
+  _parseShelter(r) {
+    const hasFix = r.lat != null && r.lng != null;
+    return {
+      id: r.id, name: r.name, location: r.location, capacity: r.capacity, occupied: r.occupied,
+      amenities: r.amenities, hasMedical: r.has_medical === 1, hasAirlift: r.has_airlift === 1,
+      sectorId: r.sector_id,
+      coordinates: hasFix ? { lat: r.lat, lng: r.lng, latitude: r.lat, longitude: r.lng } : null
+    };
+  }
+
+  // =================== STATS ===================
+  async getStats() {
+    const count = async (sql) => Number((await this.query(sql)).rows[0].c);
+    return {
+      incidents: await count('SELECT COUNT(*) AS c FROM incidents'),
+      activeIncidents: await count("SELECT COUNT(*) AS c FROM incidents WHERE status != 'Resolved'"),
+      teams: await count('SELECT COUNT(*) AS c FROM teams'),
+      sectors: await count('SELECT COUNT(*) AS c FROM sectors'),
+      shelters: await count('SELECT COUNT(*) AS c FROM shelters'),
+      messages: await count('SELECT COUNT(*) AS c FROM messages'),
+      volunteers: await count('SELECT COUNT(*) AS c FROM volunteers'),
+      activeSos: await count('SELECT COUNT(*) AS c FROM sos_events WHERE resolved = 0'),
+      telemetryRecords: await count('SELECT COUNT(*) AS c FROM telemetry')
+    };
   }
 }
 
-export const dbManager = new DatabaseManager().init();
+export const dbManager = new DatabaseManager();

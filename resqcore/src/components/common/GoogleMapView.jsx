@@ -27,6 +27,33 @@ import {
   Maximize2
 } from 'lucide-react';
 
+let configuredGoogleMapsKey = null;
+
+function fitMapBoundsSafely(map, bounds, pointCount) {
+  if (!map || !bounds || bounds.isEmpty() || !window.google?.maps) return;
+  const ne = bounds.getNorthEast();
+  const sw = bounds.getSouthWest();
+  const latSpan = Math.abs(ne.lat() - sw.lat());
+  const lngSpan = Math.abs(ne.lng() - sw.lng());
+
+  if (pointCount <= 1 || (latSpan < 0.008 && lngSpan < 0.008)) {
+    map.setCenter(bounds.getCenter());
+    const curZoom = map.getZoom();
+    if (!curZoom || curZoom > 15 || curZoom < 10) {
+      map.setZoom(13);
+    }
+    return;
+  }
+
+  window.google.maps.event.addListenerOnce(map, 'bounds_changed', () => {
+    const z = map.getZoom();
+    if (typeof z === 'number' && z > 15) {
+      map.setZoom(15);
+    }
+  });
+  map.fitBounds(bounds, { top: 60, right: 60, bottom: 60, left: 60 });
+}
+
 export const GoogleMapView = ({
   apiKey,
   incidents = [],
@@ -39,6 +66,7 @@ export const GoogleMapView = ({
   showTeams = true,
   filterMode = 'all', // 'all' | 'sos' | 'missions'
   onOpenKeyModal,
+  onFallbackToTactical,
   onVerifyIncident,
   onDispatchTeam
 }) => {
@@ -62,11 +90,55 @@ export const GoogleMapView = ({
     if (!apiKey || !mapContainerRef.current) return;
 
     let isMounted = true;
+    let observer = null;
+    const prevAuthFailure = window.gm_authFailure;
+
+    const handleAuthFailure = (reason) => {
+      if (!isMounted) return;
+      const msg =
+        reason ||
+        'Google Maps rejected this API key (check Maps JavaScript API activation, Billing, and HTTP referrer restrictions in Google Cloud Console).';
+      setLoadError(msg);
+      if (onFallbackToTactical) {
+        onFallbackToTactical(msg);
+      }
+    };
+
+    window.gm_authFailure = () => handleAuthFailure();
+
     try {
-      setOptions({
-        key: apiKey,
-        v: 'weekly'
-      });
+      if (!configuredGoogleMapsKey && !window.google?.maps?.importLibrary) {
+        setOptions({
+          key: apiKey,
+          v: 'weekly'
+        });
+        configuredGoogleMapsKey = apiKey;
+      }
+
+      if (mapContainerRef.current && typeof MutationObserver !== 'undefined') {
+        observer = new MutationObserver(() => {
+          const container = mapContainerRef.current;
+          if (!container) return;
+          if (container.querySelector('.gm-err-container, .gm-err-message')) {
+            handleAuthFailure(
+              'Google Maps rejected this API key or daily Demo Key quota was reached.'
+            );
+            return;
+          }
+          const dismissBtn = container.querySelector('.dismissButton');
+          const txt = container.innerText || '';
+          if (
+            dismissBtn ||
+            txt.includes("This page can't load Google Maps correctly") ||
+            txt.includes('Oops! Something went wrong.')
+          ) {
+            handleAuthFailure(
+              'Google Maps quota limit or billing restriction triggered for this key.'
+            );
+          }
+        });
+        observer.observe(mapContainerRef.current, { childList: true, subtree: true });
+      }
 
       Promise.all([
         importLibrary('maps'),
@@ -84,6 +156,7 @@ export const GoogleMapView = ({
               lng: centerCoords.lng
             },
             zoom: centerCoords.zoom,
+            maxZoom: 18,
             styles: mapType === 'roadmap' ? TACTICAL_DARK_MAP_STYLE : undefined,
             mapTypeId: mapType,
             disableDefaultUI: true,
@@ -102,18 +175,20 @@ export const GoogleMapView = ({
         .catch((err) => {
           console.error('Google Maps Load Error:', err);
           if (isMounted) {
-            setLoadError(err.message || 'Failed to load Google Maps. Check your API key.');
+            handleAuthFailure(err?.message || 'Failed to load Google Maps. Check your API key.');
           }
         });
     } catch (err) {
       console.error('setOptions Error:', err);
       if (isMounted) {
-        setLoadError(err.message || 'Failed to load Google Maps.');
+        handleAuthFailure(err?.message || 'Failed to load Google Maps.');
       }
     }
 
     return () => {
       isMounted = false;
+      observer?.disconnect();
+      window.gm_authFailure = prevAuthFailure;
       markersRef.current.forEach(m => m.setMap(null));
       markersRef.current = [];
     };
@@ -175,6 +250,7 @@ export const GoogleMapView = ({
 
     const bounds = new window.google.maps.LatLngBounds();
     let hasValidBounds = false;
+    let pointCount = 0;
 
     // Helper functions for classification
     const checkCitizenSOS = (inc) => Boolean(
@@ -233,6 +309,24 @@ export const GoogleMapView = ({
 
       bounds.extend({ lat, lng });
       hasValidBounds = true;
+      pointCount += 1;
+
+      if (showHeatmap && window.google.maps.Circle) {
+        const heatColor = isSOS || incident.severity === 'High' || incident.severity === 'Critical'
+          ? '#EF4444'
+          : '#F59E0B';
+        const heatCircle = new window.google.maps.Circle({
+          strokeOpacity: 0,
+          fillColor: heatColor,
+          fillOpacity: 0.25,
+          map: mapInstanceRef.current,
+          center: { lat, lng },
+          radius: isSOS ? 2800 : 1800,
+          clickable: false,
+          zIndex: 5
+        });
+        missionsRef.current.push(heatCircle);
+      }
 
       const markerSize = isSOS ? (isSelected ? 48 : 40) : (isSelected ? 38 : 30);
       const markerAnchor = markerSize / 2;
@@ -310,6 +404,7 @@ export const GoogleMapView = ({
         const pos = { lat: teamLat, lng: teamLng };
         bounds.extend(pos);
         hasValidBounds = true;
+        pointCount += 1;
 
         const batteryPct = team.battery !== undefined ? team.battery : '?';
         const batteryColor = batteryPct > 50 ? '#10B981' : batteryPct > 20 ? '#F59E0B' : '#EF4444';
@@ -466,12 +561,15 @@ export const GoogleMapView = ({
       const lng = parseCoord(rawLng);
       if (lat && lng && mapInstanceRef.current) {
         mapInstanceRef.current.panTo({ lat, lng });
+        const curZoom = mapInstanceRef.current.getZoom();
+        if (!curZoom || curZoom > 15 || curZoom < 10) {
+          mapInstanceRef.current.setZoom(13);
+        }
       }
     } else if (hasValidBounds && mapInstanceRef.current) {
-      // Auto-fit to show all active markers without getting cut off
-      mapInstanceRef.current.fitBounds(bounds, { top: 60, right: 60, bottom: 60, left: 60 });
+      fitMapBoundsSafely(mapInstanceRef.current, bounds, pointCount);
     }
-  }, [incidents, teams, selectedIncidentId, mapLoaded, showTeams, activeHudFilter]);
+  }, [incidents, teams, selectedIncidentId, mapLoaded, showTeams, activeHudFilter, showHeatmap]);
 
   // Real-Time USGS Earthquakes live layer
   useEffect(() => {
@@ -585,7 +683,7 @@ export const GoogleMapView = ({
     }
 
     if (count > 0 && !bounds.isEmpty()) {
-      mapInstanceRef.current.fitBounds(bounds, { top: 60, right: 60, bottom: 60, left: 60 });
+      fitMapBoundsSafely(mapInstanceRef.current, bounds, count);
     } else {
       const centerCoords = getDistrictCenter(district);
       mapInstanceRef.current.setCenter({
@@ -653,23 +751,43 @@ export const GoogleMapView = ({
         <p style={{ fontSize: '13px', color: '#94A3B8', maxWidth: '420px', marginTop: '6px' }}>
           {loadError}
         </p>
-        <button
-          onClick={onOpenKeyModal}
-          style={{
-            marginTop: '16px',
-            padding: '8px 16px',
-            backgroundColor: '#1E3A8A',
-            color: '#FFFFFF',
-            borderRadius: '8px',
-            fontSize: '12px',
-            fontWeight: 600,
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px'
-          }}
-        >
-          <Key size={14} /> Update Google Maps API Key
-        </button>
+        <div style={{ display: 'flex', gap: '10px', marginTop: '16px', flexWrap: 'wrap', justifyContent: 'center' }}>
+          {onFallbackToTactical && (
+            <button
+              onClick={() => onFallbackToTactical(loadError)}
+              style={{
+                padding: '8px 16px',
+                backgroundColor: '#10B981',
+                color: '#03120B',
+                borderRadius: '8px',
+                fontSize: '12px',
+                fontWeight: 700,
+                border: 'none',
+                cursor: 'pointer'
+              }}
+            >
+              Use Live Tactical Map (No Key Needed)
+            </button>
+          )}
+          <button
+            onClick={onOpenKeyModal}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: '#1E3A8A',
+              color: '#FFFFFF',
+              borderRadius: '8px',
+              fontSize: '12px',
+              fontWeight: 600,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              border: 'none',
+              cursor: 'pointer'
+            }}
+          >
+            <Key size={14} /> Update Google Maps API Key
+          </button>
+        </div>
       </div>
     );
   }

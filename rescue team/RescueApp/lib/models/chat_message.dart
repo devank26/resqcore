@@ -1,6 +1,9 @@
 class ChatMessage {
   final String id;
+  final String channel;
   final String sender;
+  final String? senderId;
+  final String? senderRole;
   final String initials;
   final String role;
   final String time;
@@ -8,13 +11,17 @@ class ChatMessage {
   final String? locationTag;
   final String? attachmentUrl;
   final String? attachmentCoords;
+  final String? createdAt;
   final bool isAlert;
   final bool isBot;
   final bool isMe;
 
   const ChatMessage({
     required this.id,
+    this.channel = 'command-net',
     required this.sender,
+    this.senderId,
+    this.senderRole,
     required this.initials,
     required this.role,
     required this.time,
@@ -22,25 +29,60 @@ class ChatMessage {
     this.locationTag,
     this.attachmentUrl,
     this.attachmentCoords,
+    this.createdAt,
     this.isAlert = false,
     this.isBot = false,
     this.isMe = false,
   });
 
-  factory ChatMessage.fromJson(Map<String, dynamic> json, {String currentUserName = ''}) {
+  factory ChatMessage.fromJson(
+    Map<String, dynamic> json, {
+    String currentUserName = '',
+    String currentUserRole = 'rescue',
+    String currentTeamId = '',
+  }) {
     final senderName = (json['sender'] ?? 'Operator').toString();
-    final isCurrentSelf = (json['isSelf'] == true) || (currentUserName.isNotEmpty && senderName.contains(currentUserName));
+    final senderId = json['senderId']?.toString();
+    final senderRole = json['senderRole']?.toString();
+    final channel =
+        (json['channel'] ?? json['channelId'] ?? 'command-net').toString();
+    final sameRole = senderRole == null ||
+        senderRole.isEmpty ||
+        senderRole == currentUserRole;
+    final matchesTeam =
+        currentTeamId.isNotEmpty && senderId == 'usr-$currentTeamId';
+    final matchesName = currentUserName.isNotEmpty &&
+        (senderName == currentUserName || senderName.contains(currentUserName));
+    final isCurrentSelf =
+        (json['isSelf'] == true) || (sameRole && (matchesTeam || matchesName));
+
+    final rawInitials = (json['initials'] ?? '').toString().trim();
+    final fallbackInitials = senderName.trim().isNotEmpty
+        ? senderName
+            .trim()
+            .split(RegExp(r'\s+'))
+            .where((s) => s.isNotEmpty)
+            .take(2)
+            .map((s) => s[0].toUpperCase())
+            .join()
+        : 'OP';
+    final rawLocTag = json['locationTag']?.toString();
 
     return ChatMessage(
-      id: (json['id'] ?? 'msg-${DateTime.now().millisecondsSinceEpoch}').toString(),
+      id: (json['id'] ?? 'msg-${DateTime.now().millisecondsSinceEpoch}')
+          .toString(),
+      channel: channel.isNotEmpty ? channel : 'command-net',
       sender: senderName,
-      initials: (json['initials'] ?? (senderName.isNotEmpty ? senderName[0].toUpperCase() : 'OP')).toString(),
+      senderId: senderId,
+      senderRole: senderRole,
+      initials: rawInitials.isNotEmpty ? rawInitials : fallbackInitials,
       role: (json['role'] ?? 'Tactical Unit').toString(),
       time: (json['time'] ?? 'Just now').toString(),
       text: (json['text'] ?? '').toString(),
-      locationTag: json['locationTag'] as String?,
+      locationTag: (rawLocTag != null && rawLocTag.isNotEmpty) ? rawLocTag : null,
       attachmentUrl: json['attachmentUrl'] as String?,
       attachmentCoords: json['attachmentCoords'] as String?,
+      createdAt: (json['createdAt'] ?? json['timestamp'])?.toString(),
       isAlert: json['isAlert'] == true,
       isBot: json['isBot'] == true,
       isMe: isCurrentSelf,

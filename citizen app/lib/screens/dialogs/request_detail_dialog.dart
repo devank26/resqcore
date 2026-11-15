@@ -130,6 +130,43 @@ class RequestDetailDialog extends StatelessWidget {
               ),
               const SizedBox(height: 14),
 
+              if (request.requestedResources.isNotEmpty) ...[
+                Text(
+                  'Requested Resources',
+                  style: AppTextStyles.labelSm.copyWith(
+                    color: AppColors.textTertiary,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  children: request.requestedResources
+                      .map(
+                        (res) => Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: AppColors.primaryContainer.withValues(alpha: 0.18),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: AppColors.primaryContainer.withValues(alpha: 0.5),
+                            ),
+                          ),
+                          child: Text(
+                            '${res.name} × ${res.quantity}',
+                            style: AppTextStyles.labelSm.copyWith(
+                              color: AppColors.primary,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      )
+                      .toList(),
+                ),
+                const SizedBox(height: 14),
+              ],
+
               // Fleet Update Strip
               Container(
                 padding: const EdgeInsets.all(12),

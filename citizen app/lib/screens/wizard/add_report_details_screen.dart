@@ -23,7 +23,16 @@ class _AddReportDetailsScreenState extends State<AddReportDetailsScreen> {
     super.initState();
     final provider = context.read<RescueProvider>();
     _descController = TextEditingController(text: provider.draftDescription);
-    _contactController = TextEditingController(text: provider.draftContact);
+    _contactController = TextEditingController(
+      text: provider.draftContact.isNotEmpty
+          ? provider.draftContact
+          : provider.currentUser.phoneNumber,
+    );
+    if (!provider.isDemoMode && provider.availableResources.isEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) context.read<RescueProvider>().loadResourcesFromBackend();
+      });
+    }
   }
 
   @override
@@ -33,29 +42,338 @@ class _AddReportDetailsScreenState extends State<AddReportDetailsScreen> {
     super.dispose();
   }
 
-  void _onSubmitReport() {
+  Future<void> _onSubmitReport() async {
+    final provider = context.read<RescueProvider>();
+    final contact = _contactController.text.trim();
+    if (contact.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter a contact number so responders can reach you.'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+    if (!provider.draftConsent) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please confirm consent to share this report with responders.'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+
     setState(() {
       _isSubmitting = true;
     });
 
-    Future.delayed(const Duration(milliseconds: 700), () {
-      if (mounted) {
-        final provider = context.read<RescueProvider>();
-        provider.setDraftDescription(_descController.text);
-        provider.setDraftContact(_contactController.text);
-        provider.submitDraftReport();
+    provider.setDraftDescription(_descController.text.trim());
+    provider.setDraftContact(contact);
 
-        setState(() {
-          _isSubmitting = false;
-        });
+    try {
+      await provider.submitDraftReport();
+      if (!mounted) return;
+      setState(() {
+        _isSubmitting = false;
+      });
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => const ReportSubmissionSuccessScreen(),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isSubmitting = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(e.toString().replaceFirst('Bad state: ', '')),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    }
+  }
 
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (_) => const ReportSubmissionSuccessScreen(),
+  IconData _resourceIcon(String id) {
+    switch (id) {
+      case 'medical_kit':
+        return Icons.medical_services;
+      case 'ambulance':
+        return Icons.local_hospital;
+      case 'boat':
+        return Icons.directions_boat;
+      case 'drone':
+        return Icons.radar;
+      case 'helicopter':
+        return Icons.flight;
+      default:
+        return Icons.inventory_2;
+    }
+  }
+
+  Widget _buildResourceSelector(RescueProvider provider) {
+    final resources = provider.availableResources;
+    final totalSelected = provider.selectedResourceCount;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Row(
+              children: [
+                Text(
+                  'Choose needed resources',
+                  style: AppTextStyles.labelMd.copyWith(
+                    color: AppColors.textWhite,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: totalSelected > 0
+                        ? AppColors.primaryContainer.withValues(alpha: 0.25)
+                        : AppColors.surfaceContainerHigh,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    totalSelected > 0 ? '$totalSelected selected' : 'Optional',
+                    style: AppTextStyles.labelSm.copyWith(
+                      color: totalSelected > 0
+                          ? AppColors.primary
+                          : AppColors.textSecondary,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 10.5,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            if (!provider.isDemoMode)
+              InkWell(
+                onTap: provider.loadingResources
+                    ? null
+                    : () => provider.loadResourcesFromBackend(),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.refresh,
+                        size: 14,
+                        color: AppColors.primary,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Refresh',
+                        style: AppTextStyles.labelSm.copyWith(
+                          color: AppColors.primary,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text(
+          'Select dispatch equipment and quantity needed at your location.',
+          style: AppTextStyles.bodySm.copyWith(color: AppColors.textSecondary),
+        ),
+        const SizedBox(height: 10),
+        if (provider.loadingResources && resources.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceContainerLowest,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.strokeBorder),
+            ),
+            child: const Row(
+              children: [
+                SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                SizedBox(width: 10),
+                Text(
+                  'Loading live district resource inventory...',
+                  style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                ),
+              ],
+            ),
+          )
+        else if (resources.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceContainerLowest,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.strokeBorder),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    provider.resourcesError ?? 'Resource catalog unavailable right now.',
+                    style: AppTextStyles.bodySm.copyWith(color: AppColors.textSecondary),
+                  ),
+                ),
+                if (!provider.isDemoMode)
+                  TextButton(
+                    onPressed: () => provider.loadResourcesFromBackend(),
+                    child: const Text('Retry'),
+                  ),
+              ],
+            ),
+          )
+        else
+          Column(
+            children: resources.map((res) {
+              final id = (res['id'] ?? '').toString();
+              final name = (res['name'] ?? id).toString();
+              final available = int.tryParse((res['available'] ?? 0).toString()) ?? 0;
+              final total = int.tryParse((res['total'] ?? available).toString()) ?? 1;
+              final maxCap = total > 0 ? total : 10;
+              final qty = provider.resourceQuantity(id);
+              final isSelected = qty > 0;
+
+              return Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: isSelected
+                      ? AppColors.primaryContainer.withValues(alpha: 0.12)
+                      : AppColors.surfaceContainerLowest,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: isSelected
+                        ? AppColors.primaryContainer
+                        : AppColors.strokeBorder,
+                    width: isSelected ? 1.5 : 1,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        color: (isSelected
+                                ? AppColors.primaryContainer
+                                : AppColors.surfaceContainerHigh)
+                            .withValues(alpha: isSelected ? 0.25 : 1.0),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Icon(
+                        _resourceIcon(id),
+                        size: 18,
+                        color: isSelected ? AppColors.primary : AppColors.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            name,
+                            style: AppTextStyles.bodyMd.copyWith(
+                              color: AppColors.textWhite,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13.5,
+                            ),
+                          ),
+                          Text(
+                            '$available available · fleet max $total',
+                            style: AppTextStyles.bodySm.copyWith(
+                              color: AppColors.textSecondary,
+                              fontSize: 11.5,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        InkWell(
+                          onTap: qty > 0 ? () => provider.decrementResource(id) : null,
+                          borderRadius: BorderRadius.circular(8),
+                          child: Semantics(
+                            label: 'Decrease $name',
+                            button: true,
+                            child: Container(
+                              width: 32,
+                              height: 32,
+                              decoration: BoxDecoration(
+                                color: qty > 0
+                                    ? AppColors.surfaceContainerHigh
+                                    : AppColors.surfaceContainerLow,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: AppColors.strokeBorder),
+                              ),
+                              child: Icon(
+                                Icons.remove,
+                                size: 16,
+                                color: qty > 0 ? Colors.white : AppColors.textTertiary,
+                              ),
+                            ),
+                          ),
+                        ),
+                        SizedBox(
+                          width: 34,
+                          child: Text(
+                            '$qty',
+                            textAlign: TextAlign.center,
+                            style: AppTextStyles.labelMd.copyWith(
+                              color: isSelected ? Colors.white : AppColors.textSecondary,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                        InkWell(
+                          onTap: qty < maxCap
+                              ? () => provider.incrementResource(id, max: maxCap)
+                              : null,
+                          borderRadius: BorderRadius.circular(8),
+                          child: Semantics(
+                            label: 'Increase $name',
+                            button: true,
+                            child: Container(
+                              width: 32,
+                              height: 32,
+                              decoration: BoxDecoration(
+                                color: qty < maxCap
+                                    ? AppColors.primaryContainer
+                                    : AppColors.surfaceContainerLow,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Icon(
+                                Icons.add,
+                                size: 16,
+                                color: qty < maxCap ? Colors.white : AppColors.textTertiary,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            }).toList(),
           ),
-        );
-      }
-    });
+      ],
+    );
   }
 
   @override
@@ -413,6 +731,10 @@ class _AddReportDetailsScreenState extends State<AddReportDetailsScreen> {
                         color: AppColors.textSecondary,
                       ),
                     ),
+                    const SizedBox(height: 18),
+
+                    // Field 2b: Choose Needed Resources & Quantity
+                    _buildResourceSelector(provider),
                     const SizedBox(height: 18),
 
                     // Field 3: Contact number

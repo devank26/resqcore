@@ -92,12 +92,16 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final messages = widget.appState.messages;
+    final isDemo = widget.appState.isDemoMode;
+    final activeChannel = widget.appState.activeChatChannel;
+    final directChannel = widget.appState.directTeamChannel;
+    final assignedInc = widget.appState.activeAssignedIncident;
+    final messages = widget.appState.activeChannelMessages;
 
     return Scaffold(
       backgroundColor: TacticalColors.surface,
       appBar: TacticalHeader(
-        title: 'Incident Details',
+        title: 'Tactical Radio & Chat',
         appState: widget.appState,
         showBackButton: true,
         onSosPressed: widget.onSosPressed,
@@ -118,6 +122,7 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
                     border: Border.all(color: const Color(0xFF1E293B)),
                   ),
                   child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -133,9 +138,13 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
                                 ),
                               ),
                               const SizedBox(width: 8),
-                              const Text(
-                                'Channel 4-Alpha',
-                                style: TextStyle(
+                              Text(
+                                isDemo
+                                    ? 'Channel 4-Alpha'
+                                    : activeChannel == 'command-net'
+                                        ? '# Command Net'
+                                        : '# HQ Direct (${widget.appState.teamName})',
+                                style: const TextStyle(
                                   fontSize: 16,
                                   fontWeight: FontWeight.bold,
                                   color: TacticalColors.onSurface,
@@ -174,132 +183,215 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text(
-                            TacticalSyncService.isConnected
-                                ? 'Real-Time WebSocket • Gateway Latency: 4 ms'
-                                : 'Offline Radio Node • Polling relay every 4s',
-                            style: const TextStyle(
-                              fontSize: 11,
-                              color: TacticalColors.onSurfaceVariant,
+                          Flexible(
+                            child: Text(
+                              TacticalSyncService.isConnected
+                                  ? 'Real-Time WebSocket · Command Sync Active'
+                                  : 'Polling relay every 5s · Backend Sync',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: TacticalColors.onSurfaceVariant,
+                              ),
                             ),
                           ),
-                          Row(
-                            children: [
-                              _buildPresenceAvatar('RN', TacticalColors.primaryContainer),
-                              _buildPresenceAvatar('PS', TacticalColors.tertiaryContainer),
-                              _buildPresenceAvatar('AJ', TacticalColors.surfaceBright),
-                              const SizedBox(width: 4),
-                              const Text(
-                                '4 Active',
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold,
-                                  color: TacticalColors.tertiary,
+                          if (isDemo)
+                            Row(
+                              children: [
+                                _buildPresenceAvatar('RN', TacticalColors.primaryContainer),
+                                _buildPresenceAvatar('PS', TacticalColors.tertiaryContainer),
+                                _buildPresenceAvatar('AJ', TacticalColors.surfaceBright),
+                                const SizedBox(width: 4),
+                                const Text(
+                                  '4 Active',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    color: TacticalColors.tertiary,
+                                  ),
                                 ),
+                              ],
+                            )
+                          else
+                            Text(
+                              '${widget.appState.teams.length} Units Online',
+                              style: const TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                                color: TacticalColors.tertiary,
                               ),
-                            ],
-                          ),
+                            ),
                         ],
                       ),
+                      if (!isDemo && directChannel != null) ...[
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          children: [
+                            ChoiceChip(
+                              label: const Text('# Command Net', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+                              selected: activeChannel == 'command-net',
+                              selectedColor: TacticalColors.primaryContainer,
+                              backgroundColor: TacticalColors.surfaceContainerHigh,
+                              labelStyle: TextStyle(
+                                color: activeChannel == 'command-net' ? TacticalColors.onPrimaryContainer : TacticalColors.onSurfaceVariant,
+                              ),
+                              onSelected: (_) => widget.appState.setChatChannel('command-net'),
+                            ),
+                            ChoiceChip(
+                              label: const Text('# HQ Direct', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+                              selected: activeChannel == directChannel,
+                              selectedColor: TacticalColors.primaryContainer,
+                              backgroundColor: TacticalColors.surfaceContainerHigh,
+                              labelStyle: TextStyle(
+                                color: activeChannel == directChannel ? TacticalColors.onPrimaryContainer : TacticalColors.onSurfaceVariant,
+                              ),
+                              onSelected: (_) => widget.appState.setChatChannel(directChannel),
+                            ),
+                          ],
+                        ),
+                      ],
                     ],
                   ),
                 ),
                 const SizedBox(height: 10),
 
-                // Pinned Critical Incident Alert Banner with Scenario Backdrop
-                Container(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: TacticalColors.secondaryContainer,
-                      width: 1.2,
-                    ),
-                    boxShadow: const [
-                      BoxShadow(
-                        color: Color(0x33A40217),
-                        blurRadius: 10,
-                        offset: Offset(0, 3),
+                // Pinned Critical Incident Alert Banner (demo keeps simulated Flood Bridge 2; live shows real assigned incident if any)
+                if (isDemo) ...[
+                  Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                        color: TacticalColors.secondaryContainer,
+                        width: 1.2,
                       ),
-                    ],
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(13),
-                    child: Stack(
-                      children: [
-                        Positioned.fill(
-                          child: Image.asset(
-                            'assets/images/scenarios/ravine_night_patrol.png',
-                            fit: BoxFit.cover,
-                            alignment: Alignment.centerRight,
-                            errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                          ),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x33A40217),
+                          blurRadius: 10,
+                          offset: Offset(0, 3),
                         ),
-                        Positioned.fill(
-                          child: Container(
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                begin: Alignment.centerLeft,
-                                end: Alignment.centerRight,
-                                colors: [
-                                  const Color(0xFF38080E).withValues(alpha: 0.96),
-                                  const Color(0xFF38080E).withValues(alpha: 0.88),
-                                  const Color(0xFF4A0E15).withValues(alpha: 0.65),
-                                ],
-                                stops: const [0.0, 0.65, 1.0],
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(13),
+                      child: Stack(
+                        children: [
+                          Positioned.fill(
+                            child: Image.asset(
+                              'assets/images/scenarios/ravine_night_patrol.png',
+                              fit: BoxFit.cover,
+                              alignment: Alignment.centerRight,
+                              errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                            ),
+                          ),
+                          Positioned.fill(
+                            child: Container(
+                              decoration: BoxDecoration(
+                                gradient: LinearGradient(
+                                  begin: Alignment.centerLeft,
+                                  end: Alignment.centerRight,
+                                  colors: [
+                                    const Color(0xFF38080E).withValues(alpha: 0.96),
+                                    const Color(0xFF38080E).withValues(alpha: 0.88),
+                                    const Color(0xFF4A0E15).withValues(alpha: 0.65),
+                                  ],
+                                  stops: const [0.0, 0.65, 1.0],
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Icon(Icons.warning, color: TacticalColors.secondary, size: 22),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                      children: [
-                                        const Text(
-                                          'CRITICAL PINNED ALERT',
-                                          style: TextStyle(
-                                            fontSize: 11,
-                                            fontWeight: FontWeight.bold,
-                                            color: TacticalColors.secondaryFixed,
-                                            letterSpacing: 0.5,
-                                          ),
-                                        ),
-                                        Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-                                          decoration: BoxDecoration(
-                                            color: TacticalColors.secondaryContainer,
-                                            borderRadius: BorderRadius.circular(4),
-                                          ),
-                                          child: const Text(
-                                            'T-20 Mins',
+                          Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Icon(Icons.warning, color: TacticalColors.secondary, size: 22),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          const Text(
+                                            'CRITICAL PINNED ALERT',
                                             style: TextStyle(
-                                              fontSize: 10,
+                                              fontSize: 11,
                                               fontWeight: FontWeight.bold,
-                                              color: Colors.white,
+                                              color: TacticalColors.secondaryFixed,
+                                              letterSpacing: 0.5,
                                             ),
                                           ),
-                                        ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 4),
-                                    const Text(
-                                      'Flash Flood Crest Alert: Water level rising 0.8m at Bridge 2. Move evacuees to High Ground Shelter within 20 mins.',
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w600,
-                                        color: TacticalColors.onSecondaryContainer,
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                                            decoration: BoxDecoration(
+                                              color: TacticalColors.secondaryContainer,
+                                              borderRadius: BorderRadius.circular(4),
+                                            ),
+                                            child: const Text(
+                                              'T-20 Mins',
+                                              style: TextStyle(
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.bold,
+                                                color: Colors.white,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
                                       ),
-                                    ),
-                                  ],
+                                      const SizedBox(height: 4),
+                                      const Text(
+                                        'Flash Flood Crest Alert: Water level rising 0.8m at Bridge 2. Move evacuees to High Ground Shelter within 20 mins.',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600,
+                                          color: TacticalColors.onSecondaryContainer,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                ] else if (assignedInc != null) ...[
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF38080E).withValues(alpha: 0.72),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: TacticalColors.secondaryContainer, width: 1.2),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.assignment_late, color: TacticalColors.secondary, size: 20),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'ACTIVE MISSION · ${assignedInc.id} (${assignedInc.backendStatus})',
+                                style: const TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  color: TacticalColors.secondaryFixed,
+                                  letterSpacing: 0.4,
+                                ),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                '${assignedInc.title} · ${assignedInc.location}',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: TacticalColors.onSecondaryContainer,
                                 ),
                               ),
                             ],
@@ -308,11 +400,22 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
                       ],
                     ),
                   ),
-                ),
-                const SizedBox(height: 14),
+                  const SizedBox(height: 14),
+                ],
 
                 // Messages Stream
-                ...messages.map((msg) => _buildMessageBubble(msg)),
+                if (messages.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 32),
+                    child: Center(
+                      child: Text(
+                        'No messages on this tactical channel yet.',
+                        style: TextStyle(fontSize: 13, color: TacticalColors.onSurfaceVariant),
+                      ),
+                    ),
+                  )
+                else
+                  ...messages.map((msg) => _buildMessageBubble(msg)),
               ],
             ),
           ),
@@ -650,12 +753,15 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
                                 textStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
                               ),
                               onPressed: () {
+                                final unitLabel = widget.appState.isDemoMode
+                                    ? 'Team Alpha'
+                                    : widget.appState.teamName;
                                 ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text('Task accepted: Team Alpha responding')),
+                                  SnackBar(content: Text('Task acknowledged by $unitLabel')),
                                 );
                               },
                               icon: const Icon(Icons.check, size: 14),
-                              label: const Text('Accept Task'),
+                              label: const Text('Acknowledge'),
                             ),
                             const SizedBox(width: 8),
                             OutlinedButton.icon(
@@ -666,12 +772,11 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
                                 textStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
                               ),
                               onPressed: () {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text('Route calculated: 2.1km via Ridge Road')),
-                                );
+                                widget.appState.setTabIndex(1);
+                                Navigator.of(context).pop();
                               },
                               icon: const Icon(Icons.near_me, size: 14),
-                              label: const Text('Route Plan'),
+                              label: const Text('Open Map'),
                             ),
                           ],
                         ),

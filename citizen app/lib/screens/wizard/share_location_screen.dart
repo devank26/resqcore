@@ -10,7 +10,20 @@ import '../../widgets/app_top_bar.dart';
 import '../dialogs/location_selector_dialog.dart';
 import 'add_report_details_screen.dart';
 
-const String _kGoogleMapsApiKey = 'AIzaSyAMaBxMmCY1r2TmqoMZUm2-v8FfhE1n44g';
+const String _kGoogleMapsApiKey =
+    String.fromEnvironment('GOOGLE_MAPS_API_KEY', defaultValue: '');
+
+String _googleTileUrl({required bool satellite}) {
+  final lyrs = satellite ? 'y' : 'm';
+  final keyParam = _kGoogleMapsApiKey.isNotEmpty ? '&key=$_kGoogleMapsApiKey' : '';
+  return 'https://mt{s}.google.com/vt/lyrs=$lyrs&x={x}&y={y}&z={z}$keyParam';
+}
+
+String _fallbackTileUrl({required bool satellite}) {
+  return satellite
+      ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+      : 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}';
+}
 
 class ShareLocationScreen extends StatefulWidget {
   const ShareLocationScreen({super.key});
@@ -36,6 +49,11 @@ class _ShareLocationScreenState extends State<ShareLocationScreen>
       vsync: this,
       duration: const Duration(milliseconds: 1800),
     )..repeat();
+    if (!provider.isDemoMode && !provider.hasGpsFix) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _onCurrentLocationPressed();
+      });
+    }
   }
 
   @override
@@ -90,13 +108,24 @@ class _ShareLocationScreenState extends State<ShareLocationScreen>
   void _applyFallbackLocation(RescueProvider provider) {
     setState(() {
       _isDetectingGps = false;
-      _addressController.text = provider.currentLocationName;
+      if (provider.hasGpsFix && _addressController.text.trim().isEmpty) {
+        _addressController.text = provider.currentLocationName;
+      }
     });
-    provider.setDraftAddress(provider.currentLocationName, 'Uttarakhand');
-    _mapController.move(LatLng(provider.currentLatitude, provider.currentLongitude), 13.5);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Location set to: ${provider.currentLocationName}')),
-    );
+    if (provider.hasGpsFix) {
+      provider.setDraftAddress(provider.currentLocationName, 'Uttarakhand');
+      _mapController.move(LatLng(provider.currentLatitude, provider.currentLongitude), 13.5);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Location set to: ${provider.currentLocationName}')),
+      );
+    } else {
+      _mapController.move(const LatLng(30.3165, 78.0322), 12.5);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('GPS unavailable — tap anywhere on the map or choose a quick zone below'),
+        ),
+      );
+    }
   }
 
   @override
@@ -276,8 +305,10 @@ class _ShareLocationScreenState extends State<ShareLocationScreen>
                             FlutterMap(
                               mapController: _mapController,
                               options: MapOptions(
-                                initialCenter: LatLng(provider.currentLatitude, provider.currentLongitude),
-                                initialZoom: 13.5,
+                                initialCenter: provider.hasGpsFix
+                                    ? LatLng(provider.currentLatitude, provider.currentLongitude)
+                                    : const LatLng(30.3165, 78.0322),
+                                initialZoom: provider.hasGpsFix ? 13.5 : 12.5,
                                 minZoom: 5,
                                 maxZoom: 19,
                                 onTap: (tapPosition, point) {
@@ -296,19 +327,19 @@ class _ShareLocationScreenState extends State<ShareLocationScreen>
                               ),
                               children: [
                                 TileLayer(
-                                  urlTemplate: _useSatelliteRadar
-                                      ? 'https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&key=$_kGoogleMapsApiKey'
-                                      : 'https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&key=$_kGoogleMapsApiKey',
+                                  urlTemplate: _googleTileUrl(satellite: _useSatelliteRadar),
+                                  fallbackUrl: _fallbackTileUrl(satellite: _useSatelliteRadar),
                                   subdomains: const ['0', '1', '2', '3'],
                                   userAgentPackageName: 'com.example.rescue_core',
                                   maxZoom: 20,
                                 ),
                                 MarkerLayer(
                                   markers: [
-                                    Marker(
-                                      point: LatLng(provider.currentLatitude, provider.currentLongitude),
-                                      width: 130,
-                                      height: 80,
+                                    if (provider.hasGpsFix)
+                                      Marker(
+                                        point: LatLng(provider.currentLatitude, provider.currentLongitude),
+                                        width: 130,
+                                        height: 80,
                                       child: Column(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
@@ -397,7 +428,9 @@ class _ShareLocationScreenState extends State<ShareLocationScreen>
                                   border: Border.all(color: AppColors.strokeBorder, width: 1),
                                 ),
                                 child: Text(
-                                  '${provider.currentLatitude.toStringAsFixed(4)}°N, ${provider.currentLongitude.toStringAsFixed(4)}°E',
+                                  provider.hasGpsFix
+                                      ? '${provider.currentLatitude.toStringAsFixed(4)}°N, ${provider.currentLongitude.toStringAsFixed(4)}°E'
+                                      : 'Tap map or GPS button',
                                   style: const TextStyle(fontSize: 10, color: Color(0xFF94A3B8), fontWeight: FontWeight.w700),
                                 ),
                               ),
@@ -450,10 +483,6 @@ class _ShareLocationScreenState extends State<ShareLocationScreen>
                                 ),
                               ),
                             ),
-                          ],
-                        ),
-                      ),
-                    ),
                           ],
                         ),
                       ),
@@ -662,6 +691,15 @@ class _ShareLocationScreenState extends State<ShareLocationScreen>
                       child: ElevatedButton(
                         onPressed: () {
                           final prov = context.read<RescueProvider>();
+                          if (!prov.hasGpsFix) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Please tap GPS, select a zone chip, or tap the map to lock coordinates.'),
+                                backgroundColor: AppColors.error,
+                              ),
+                            );
+                            return;
+                          }
                           if (_addressController.text.trim().isNotEmpty) {
                             prov.setDraftAddress(_addressController.text.trim(), 'Uttarakhand');
                           }
@@ -676,7 +714,7 @@ class _ShareLocationScreenState extends State<ShareLocationScreen>
                           foregroundColor: Colors.white,
                           elevation: 4,
                           shadowColor:
-                              AppColors.primaryContainer.withOpacity(0.4),
+                              AppColors.primaryContainer.withValues(alpha: 0.4),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12),
                           ),

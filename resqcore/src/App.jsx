@@ -11,9 +11,18 @@ import { TeamsPage } from './pages/TeamsPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { CommunicationPage } from './pages/CommunicationPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { OSPanel } from './components/os/OSPanel';
 
 export const App = () => {
-  const { isAuthenticated, activeTab, isDemoMode } = useApp();
+  const { isAuthenticated, authChecking, activeTab, isDemoMode } = useApp();
+
+  if (authChecking) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100vw', height: '100vh', backgroundColor: '#070C16', color: '#94A3B8', fontSize: '14px' }}>
+        Restoring ResQCore session...
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return <Login />;
@@ -27,6 +36,7 @@ export const App = () => {
     'incidents': { title: 'Incidents', breadcrumb: opBreadcrumb },
     'teams': { title: 'Teams', breadcrumb: opBreadcrumb },
     'reports': { title: 'Reports', breadcrumb: opBreadcrumb },
+    'os-engine': { title: 'OS Scheduler & Resources', breadcrumb: opBreadcrumb },
     'communication': { title: 'Communication', breadcrumb: opBreadcrumb },
     'settings': { title: 'Settings', breadcrumb: opBreadcrumb }
   };
@@ -57,6 +67,7 @@ export const App = () => {
           {activeTab === 'incidents' && <IncidentsPage />}
           {activeTab === 'teams' && <TeamsPage />}
           {activeTab === 'reports' && <ReportsPage />}
+          {activeTab === 'os-engine' && <OSPanel />}
           {activeTab === 'communication' && <CommunicationPage />}
           {activeTab === 'settings' && <SettingsPage />}
         </main>

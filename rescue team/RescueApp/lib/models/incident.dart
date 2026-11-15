@@ -3,15 +3,51 @@ class Incident {
   final String title;
   final String location;
   final String timestamp;
-  final String severity; // 'High', 'Medium', 'Info'
-  final String status; // 'Active', 'Resolved'
+  final String severity; // 'Critical', 'High', 'Medium', 'Info'
+  final String status; // 'Active', 'Resolved' (filter bucket)
+  final String? backendStatus; // 'Unverified', 'Verified', 'Responding', 'On site', 'Resolved'
   final String teamAssigned;
+  final String? assignedTeamId;
   final String eta;
   final int affectedCount;
   final String coordinates;
+  final double? lat;
+  final double? lng;
   final String description;
   final String substatus;
+  final String? citizenName;
+  final String? contactNumber;
+  final String? fieldReport;
+  final List<Map<String, dynamic>> requestedResources;
+  final bool isCitizenSos;
   final String? photoAssetPath;
+
+  String get displayStatus => (backendStatus != null && backendStatus!.isNotEmpty)
+      ? backendStatus!
+      : status;
+
+  bool isAssignedTo({String? teamId, String? teamName, String? userName}) {
+    if (teamId != null &&
+        teamId.isNotEmpty &&
+        assignedTeamId != null &&
+        assignedTeamId!.isNotEmpty &&
+        assignedTeamId == teamId) {
+      return true;
+    }
+    final assignedLower = teamAssigned.trim().toLowerCase();
+    if (assignedLower.isEmpty || assignedLower == 'unassigned') return false;
+    if (teamName != null &&
+        teamName.trim().isNotEmpty &&
+        assignedLower == teamName.trim().toLowerCase()) {
+      return true;
+    }
+    if (userName != null &&
+        userName.trim().isNotEmpty &&
+        assignedLower == userName.trim().toLowerCase()) {
+      return true;
+    }
+    return false;
+  }
 
   const Incident({
     required this.id,
@@ -20,45 +56,101 @@ class Incident {
     required this.timestamp,
     required this.severity,
     required this.status,
+    this.backendStatus,
     required this.teamAssigned,
+    this.assignedTeamId,
     required this.eta,
     required this.affectedCount,
     required this.coordinates,
+    this.lat,
+    this.lng,
     required this.description,
     required this.substatus,
+    this.citizenName,
+    this.contactNumber,
+    this.fieldReport,
+    this.requestedResources = const [],
+    this.isCitizenSos = false,
     this.photoAssetPath,
   });
 
   factory Incident.fromJson(Map<String, dynamic> json) {
-    String coordsStr = '30.5562° N, 79.5670° E';
+    String coordsStr = 'GPS fix pending';
+    double? parsedLat;
+    double? parsedLng;
     if (json['coordinates'] != null) {
       final c = json['coordinates'];
       if (c is Map) {
-        final lat = c['lat'] ?? c['latitude'] ?? '30.5562';
-        final lng = c['lng'] ?? c['longitude'] ?? '79.5670';
-        coordsStr = '$lat, $lng';
+        final rawLat = c['lat'] ?? c['latitude'];
+        final rawLng = c['lng'] ?? c['longitude'];
+        parsedLat = rawLat is num
+            ? rawLat.toDouble()
+            : double.tryParse(rawLat?.toString() ?? '');
+        parsedLng = rawLng is num
+            ? rawLng.toDouble()
+            : double.tryParse(rawLng?.toString() ?? '');
+        if (parsedLat != null && parsedLng != null) {
+          coordsStr =
+              '${parsedLat.toStringAsFixed(4)}° N, ${parsedLng.toStringAsFixed(4)}° E';
+        }
       } else {
         coordsStr = c.toString();
       }
     }
 
     final rawStatus = (json['status'] ?? 'Active').toString();
-    final normalizedStatus = (rawStatus.toLowerCase() == 'resolved') ? 'Resolved' : 'Active';
+    final normalizedStatus =
+        (rawStatus.toLowerCase() == 'resolved') ? 'Resolved' : 'Active';
+
+    final rawResources = json['requestedResources'];
+    final List<Map<String, dynamic>> parsedResources = [];
+    if (rawResources is List) {
+      for (final item in rawResources) {
+        if (item is Map) {
+          parsedResources.add(Map<String, dynamic>.from(item));
+        }
+      }
+    }
+
+    final rawAffected = json['affected'] ?? json['affectedCount'];
+    final int affected = rawAffected is num
+        ? rawAffected.toInt()
+        : (int.tryParse(rawAffected?.toString() ?? '') ?? 1);
+
+    final rawTeam = (json['assignedTeam'] ?? json['teamAssigned'] ?? '').toString().trim();
 
     return Incident(
       id: (json['id'] ?? 'INC-001').toString(),
       title: (json['title'] ?? 'Emergency Incident').toString(),
-      location: (json['location'] ?? json['fullAddress'] ?? 'Disaster Response Zone').toString(),
-      timestamp: (json['time'] ?? json['timestamp'] ?? 'Today · Just now').toString(),
+      location:
+          (json['location'] ?? json['area'] ?? json['fullAddress'] ?? 'Disaster Response Zone')
+              .toString(),
+      timestamp:
+          (json['time'] ?? json['timestamp'] ?? json['createdAt'] ?? 'Just now')
+              .toString(),
       severity: (json['severity'] ?? 'High').toString(),
       status: normalizedStatus,
-      teamAssigned: (json['assignedTeam'] ?? json['teamAssigned'] ?? 'Unassigned').toString(),
+      backendStatus: rawStatus,
+      teamAssigned: rawTeam.isNotEmpty ? rawTeam : 'Unassigned',
+      assignedTeamId: json['assignedTeamId']?.toString(),
       eta: (json['eta'] ?? 'Standby').toString(),
-      affectedCount: (json['affected'] ?? json['affectedCount'] ?? 1) as int,
+      affectedCount: affected,
       coordinates: coordsStr,
-      description: (json['description'] ?? 'Field operations in progress').toString(),
-      substatus: (json['substatus'] ?? json['responseDetail'] ?? json['responseSummary'] ?? 'Live operational response').toString(),
-      photoAssetPath: json['photoAssetPath'] as String? ?? 'assets/images/scenarios/flood_response_street.png',
+      lat: parsedLat,
+      lng: parsedLng,
+      description:
+          (json['description'] ?? 'Field operations in progress').toString(),
+      substatus: (json['substatus'] ??
+              json['responseDetail'] ??
+              json['responseSummary'] ??
+              'Live operational response')
+          .toString(),
+      citizenName: json['citizenName']?.toString(),
+      contactNumber: json['contactNumber']?.toString(),
+      fieldReport: json['fieldReport']?.toString(),
+      requestedResources: parsedResources,
+      isCitizenSos: json['isCitizenSOS'] == true || json['isCitizenSos'] == true,
+      photoAssetPath: json['photoAssetPath'] as String?,
     );
   }
 
@@ -69,12 +161,21 @@ class Incident {
     String? timestamp,
     String? severity,
     String? status,
+    String? backendStatus,
     String? teamAssigned,
+    String? assignedTeamId,
     String? eta,
     int? affectedCount,
     String? coordinates,
+    double? lat,
+    double? lng,
     String? description,
     String? substatus,
+    String? citizenName,
+    String? contactNumber,
+    String? fieldReport,
+    List<Map<String, dynamic>>? requestedResources,
+    bool? isCitizenSos,
     String? photoAssetPath,
   }) {
     return Incident(
@@ -84,12 +185,21 @@ class Incident {
       timestamp: timestamp ?? this.timestamp,
       severity: severity ?? this.severity,
       status: status ?? this.status,
+      backendStatus: backendStatus ?? this.backendStatus,
       teamAssigned: teamAssigned ?? this.teamAssigned,
+      assignedTeamId: assignedTeamId ?? this.assignedTeamId,
       eta: eta ?? this.eta,
       affectedCount: affectedCount ?? this.affectedCount,
       coordinates: coordinates ?? this.coordinates,
+      lat: lat ?? this.lat,
+      lng: lng ?? this.lng,
       description: description ?? this.description,
       substatus: substatus ?? this.substatus,
+      citizenName: citizenName ?? this.citizenName,
+      contactNumber: contactNumber ?? this.contactNumber,
+      fieldReport: fieldReport ?? this.fieldReport,
+      requestedResources: requestedResources ?? this.requestedResources,
+      isCitizenSos: isCitizenSos ?? this.isCitizenSos,
       photoAssetPath: photoAssetPath ?? this.photoAssetPath,
     );
   }

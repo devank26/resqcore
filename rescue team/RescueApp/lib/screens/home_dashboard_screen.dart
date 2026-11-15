@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../theme/tactical_theme.dart';
 import '../models/app_state.dart';
+import '../models/incident.dart';
 import '../widgets/tactical_header.dart';
 import '../widgets/tactical_map_canvas.dart';
 
@@ -11,6 +12,7 @@ class HomeDashboardScreen extends StatelessWidget {
   final VoidCallback onOpenIncidents;
   final VoidCallback onOpenTeams;
   final VoidCallback onReportIncident;
+  final ValueChanged<Incident>? onSelectIncident;
 
   const HomeDashboardScreen({
     super.key,
@@ -20,6 +22,7 @@ class HomeDashboardScreen extends StatelessWidget {
     required this.onOpenIncidents,
     required this.onOpenTeams,
     required this.onReportIncident,
+    this.onSelectIncident,
   });
 
   @override
@@ -105,15 +108,25 @@ class HomeDashboardScreen extends StatelessWidget {
                 ],
               ),
 
-            // Critical Emergency Alert Card (Flash Flood) with Scenario Photo Backdrop
+            // Critical Emergency / Assigned Mission Card
             GestureDetector(
-              onTap: onOpenIncidents,
+              onTap: () {
+                if (!appState.isDemoMode &&
+                    appState.activeAssignedIncident != null &&
+                    onSelectIncident != null) {
+                  onSelectIncident!(appState.activeAssignedIncident!);
+                } else {
+                  onOpenIncidents();
+                }
+              },
               child: Container(
                 width: double.infinity,
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(16),
                   border: Border.all(
-                    color: TacticalColors.secondaryContainer.withValues(alpha: 0.8),
+                    color: (!appState.isDemoMode && appState.activeAssignedIncident != null)
+                        ? TacticalColors.tertiary.withValues(alpha: 0.85)
+                        : TacticalColors.secondaryContainer.withValues(alpha: 0.8),
                     width: 1.2,
                   ),
                   boxShadow: const [
@@ -137,18 +150,24 @@ class HomeDashboardScreen extends StatelessWidget {
                           errorBuilder: (_, __, ___) => const SizedBox.shrink(),
                         ),
                       ),
-                      // Amber/Crimson Dark Gradient Scrim
+                      // Dark Gradient Scrim
                       Positioned.fill(
                         child: Container(
                           decoration: BoxDecoration(
                             gradient: LinearGradient(
                               begin: Alignment.centerLeft,
                               end: Alignment.centerRight,
-                              colors: [
-                                const Color(0xFF2B070B).withValues(alpha: 0.96),
-                                const Color(0xFF2B070B).withValues(alpha: 0.88),
-                                const Color(0xFF3D0C12).withValues(alpha: 0.55),
-                              ],
+                              colors: (!appState.isDemoMode && appState.activeAssignedIncident != null)
+                                  ? [
+                                      const Color(0xFF06231C).withValues(alpha: 0.96),
+                                      const Color(0xFF0A2E25).withValues(alpha: 0.90),
+                                      const Color(0xFF0D3B30).withValues(alpha: 0.65),
+                                    ]
+                                  : [
+                                      const Color(0xFF2B070B).withValues(alpha: 0.96),
+                                      const Color(0xFF2B070B).withValues(alpha: 0.88),
+                                      const Color(0xFF3D0C12).withValues(alpha: 0.55),
+                                    ],
                               stops: const [0.0, 0.65, 1.0],
                             ),
                           ),
@@ -162,12 +181,18 @@ class HomeDashboardScreen extends StatelessWidget {
                               width: 32,
                               height: 32,
                               decoration: BoxDecoration(
-                                color: TacticalColors.secondary.withValues(alpha: 0.25),
+                                color: (!appState.isDemoMode && appState.activeAssignedIncident != null)
+                                    ? TacticalColors.tertiary.withValues(alpha: 0.25)
+                                    : TacticalColors.secondary.withValues(alpha: 0.25),
                                 borderRadius: BorderRadius.circular(8),
                               ),
-                              child: const Icon(
-                                Icons.warning_amber_rounded,
-                                color: TacticalColors.secondary,
+                              child: Icon(
+                                (!appState.isDemoMode && appState.activeAssignedIncident != null)
+                                    ? Icons.assignment_turned_in
+                                    : Icons.warning_amber_rounded,
+                                color: (!appState.isDemoMode && appState.activeAssignedIncident != null)
+                                    ? TacticalColors.tertiary
+                                    : TacticalColors.secondary,
                                 size: 18,
                               ),
                             ),
@@ -176,20 +201,32 @@ class HomeDashboardScreen extends StatelessWidget {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 mainAxisSize: MainAxisSize.min,
-                                children: const [
+                                children: [
                                   Text(
-                                    'Flood Alert – Uttarakhand',
-                                    style: TextStyle(
-                                      fontSize: 14,
+                                    appState.isDemoMode
+                                        ? 'Flood Alert – Uttarakhand'
+                                        : (appState.activeAssignedIncident != null
+                                            ? 'ASSIGNED MISSION: ${appState.activeAssignedIncident!.title}'
+                                            : 'Live Dispatch · ${appState.teamName}'),
+                                    style: const TextStyle(
+                                      fontSize: 13.5,
                                       fontWeight: FontWeight.bold,
                                       color: TacticalColors.onSurface,
                                     ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
                                   ),
                                   Text(
-                                    'High risk in Joshimath · Water level rising rapidly',
+                                    appState.isDemoMode
+                                        ? 'High risk in Joshimath · Water level rising rapidly'
+                                        : (appState.activeAssignedIncident != null
+                                            ? '${appState.activeAssignedIncident!.location} · ETA ${appState.activeAssignedIncident!.eta} · Tap for details'
+                                            : '${appState.incidents.where((i) => i.status != "Resolved").length} active report(s) · Standby for assignment'),
                                     style: TextStyle(
                                       fontSize: 11,
-                                      color: TacticalColors.secondary,
+                                      color: (!appState.isDemoMode && appState.activeAssignedIncident != null)
+                                          ? TacticalColors.tertiaryFixedDim
+                                          : TacticalColors.secondary,
                                       fontWeight: FontWeight.w500,
                                     ),
                                     maxLines: 1,
@@ -225,7 +262,9 @@ class HomeDashboardScreen extends StatelessWidget {
                 _buildMetricCard(
                   title: 'Active Incidents',
                   value: '${appState.incidents.where((i) => i.status == 'Active').length}',
-                  subtitle: '1 High · 2 Med',
+                  subtitle: appState.isDemoMode
+                      ? '1 High · 2 Med'
+                      : '${appState.incidents.where((i) => i.status == "Active" && (i.severity == "High" || i.severity == "Critical")).length} High · ${appState.assignedIncidents.length} Assigned',
                   icon: Icons.report_problem,
                   iconColor: TacticalColors.secondary,
                   iconBg: TacticalColors.secondaryContainer.withValues(alpha: 0.3),
@@ -233,19 +272,25 @@ class HomeDashboardScreen extends StatelessWidget {
                 ),
                 // Metric 2: Rescue Teams
                 _buildMetricCard(
-                  title: 'Rescue Teams',
-                  value: '12',
-                  subtitle: 'Connected nearby',
+                  title: appState.isDemoMode ? 'Rescue Teams' : 'Assigned Missions',
+                  value: appState.isDemoMode
+                      ? '12'
+                      : '${appState.assignedIncidents.length}',
+                  subtitle: appState.isDemoMode
+                      ? 'Connected nearby'
+                      : '${appState.teams.length} teams online',
                   icon: Icons.groups,
                   iconColor: TacticalColors.primary,
                   iconBg: TacticalColors.primaryContainer.withValues(alpha: 0.2),
-                  onTap: onOpenTeams,
+                  onTap: appState.isDemoMode || appState.assignedIncidents.isEmpty
+                      ? onOpenTeams
+                      : onOpenIncidents,
                 ),
                 // Metric 3: People in Need
                 _buildMetricCard(
                   title: 'People in Need',
                   value: '${appState.affectedTotal}',
-                  subtitle: 'Joshimath region',
+                  subtitle: appState.isDemoMode ? 'Joshimath region' : 'Across live reports',
                   icon: Icons.person_pin_circle,
                   iconColor: TacticalColors.primary,
                   iconBg: TacticalColors.primary.withValues(alpha: 0.2),
@@ -254,8 +299,16 @@ class HomeDashboardScreen extends StatelessWidget {
                 // Metric 4: Your Location
                 _buildMetricCard(
                   title: 'Your Location',
-                  value: 'Dehradun',
-                  subtitle: 'Uttarakhand',
+                  value: appState.isDemoMode
+                      ? 'Dehradun'
+                      : (appState.currentLat != 0.0
+                          ? '${appState.currentLat.toStringAsFixed(2)}°N'
+                          : 'GPS Sync'),
+                  subtitle: appState.isDemoMode
+                      ? 'Uttarakhand'
+                      : (appState.currentLng != 0.0
+                          ? '${appState.currentLng.toStringAsFixed(2)}°E · Live'
+                          : (appState.locationStatusMessage ?? 'Acquiring fix...')),
                   icon: Icons.location_on,
                   iconColor: TacticalColors.primary,
                   iconBg: TacticalColors.primaryContainer.withValues(alpha: 0.2),
@@ -300,51 +353,90 @@ class HomeDashboardScreen extends StatelessWidget {
             const SizedBox(height: 6),
             SizedBox(
               height: 92,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                physics: const BouncingScrollPhysics(),
-                children: [
-                  _buildFleetCard(
-                    title: 'Swiftwater Boat Unit',
-                    unitId: 'Unit Bravo 02',
-                    status: 'Active · Joshimath River',
-                    imagePath: 'assets/images/scenarios/flood_river_boat.png',
-                    accentColor: const Color(0xFF38BDF8),
-                  ),
-                  const SizedBox(width: 10),
-                  _buildFleetCard(
-                    title: 'Alpine Helicopter',
-                    unitId: 'Falcon 01',
-                    status: 'Airborne · Sector 9',
-                    imagePath: 'assets/images/scenarios/helicopter_mountain_alpine.png',
-                    accentColor: const Color(0xFFFBBF24),
-                  ),
-                  const SizedBox(width: 10),
-                  _buildFleetCard(
-                    title: 'Wilderness K9 Unit',
-                    unitId: 'Canine Alpha',
-                    status: 'Ground Search Active',
-                    imagePath: 'assets/images/scenarios/forest_k9_search.png',
-                    accentColor: const Color(0xFF34D399),
-                  ),
-                  const SizedBox(width: 10),
-                  _buildFleetCard(
-                    title: 'Collapse & Triage',
-                    unitId: 'Delta 04',
-                    status: 'On Scene · Heavy Equip',
-                    imagePath: 'assets/images/scenarios/earthquake_rubble_collapse.png',
-                    accentColor: const Color(0xFFF87171),
-                  ),
-                  const SizedBox(width: 10),
-                  _buildFleetCard(
-                    title: 'Storm Mobile ICU',
-                    unitId: 'Echo 01',
-                    status: 'Standby Base Camp',
-                    imagePath: 'assets/images/scenarios/highway_ambulance_storm.png',
-                    accentColor: const Color(0xFFA78BFA),
-                  ),
-                ],
-              ),
+              child: appState.isDemoMode
+                  ? ListView(
+                      scrollDirection: Axis.horizontal,
+                      physics: const BouncingScrollPhysics(),
+                      children: [
+                        _buildFleetCard(
+                          title: 'Swiftwater Boat Unit',
+                          unitId: 'Unit Bravo 02',
+                          status: 'Active · Joshimath River',
+                          imagePath: 'assets/images/scenarios/flood_river_boat.png',
+                          accentColor: const Color(0xFF38BDF8),
+                        ),
+                        const SizedBox(width: 10),
+                        _buildFleetCard(
+                          title: 'Alpine Helicopter',
+                          unitId: 'Falcon 01',
+                          status: 'Airborne · Sector 9',
+                          imagePath: 'assets/images/scenarios/helicopter_mountain_alpine.png',
+                          accentColor: const Color(0xFFFBBF24),
+                        ),
+                        const SizedBox(width: 10),
+                        _buildFleetCard(
+                          title: 'Wilderness K9 Unit',
+                          unitId: 'Canine Alpha',
+                          status: 'Ground Search Active',
+                          imagePath: 'assets/images/scenarios/forest_k9_search.png',
+                          accentColor: const Color(0xFF34D399),
+                        ),
+                        const SizedBox(width: 10),
+                        _buildFleetCard(
+                          title: 'Collapse & Triage',
+                          unitId: 'Delta 04',
+                          status: 'On Scene · Heavy Equip',
+                          imagePath: 'assets/images/scenarios/earthquake_rubble_collapse.png',
+                          accentColor: const Color(0xFFF87171),
+                        ),
+                        const SizedBox(width: 10),
+                        _buildFleetCard(
+                          title: 'Storm Mobile ICU',
+                          unitId: 'Echo 01',
+                          status: 'Standby Base Camp',
+                          imagePath: 'assets/images/scenarios/highway_ambulance_storm.png',
+                          accentColor: const Color(0xFFA78BFA),
+                        ),
+                      ],
+                    )
+                  : (appState.teams.isEmpty
+                      ? Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: TacticalColors.surfaceContainerLow,
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: const Color(0xFF1E293B)),
+                          ),
+                          child: const Center(
+                            child: Text(
+                              'Connecting team telemetry with Command Center...',
+                              style: TextStyle(
+                                color: TacticalColors.onSurfaceVariant,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                        )
+                      : ListView.separated(
+                          scrollDirection: Axis.horizontal,
+                          physics: const BouncingScrollPhysics(),
+                          itemCount: appState.teams.length,
+                          separatorBuilder: (_, __) => const SizedBox(width: 10),
+                          itemBuilder: (_, idx) {
+                            final t = appState.teams[idx];
+                            final isDeployed = t.status == 'Deployed' || t.status == 'On site';
+                            return _buildFleetCard(
+                              title: t.sector,
+                              unitId: t.name,
+                              status: '${t.status} · ${t.syncedCount} resp',
+                              imagePath: 'assets/images/scenarios/forest_k9_search.png',
+                              accentColor: isDeployed
+                                  ? const Color(0xFF34D399)
+                                  : const Color(0xFF38BDF8),
+                            );
+                          },
+                        )),
             ),
             const SizedBox(height: 6),
 

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Radio,
   Send,
@@ -10,7 +10,8 @@ import {
   Megaphone,
   CheckCircle,
   Paperclip,
-  Smile
+  Smile,
+  MapPin
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { initialChannels, initialDirectMessages } from '../data/initialData';
@@ -23,15 +24,42 @@ export const CommunicationPage = () => {
     setActiveChannel,
     sendBroadcast,
     alerts,
-    user
+    user,
+    teams,
+    isDemoMode
   } = useApp();
+
+  const buildLiveChannels = () => {
+    const base = [
+      { id: 'command-net', name: 'Command Net', unread: 0, isChannel: true },
+      ...teams.map((t) => ({ id: `team-${t.id}`, name: t.name, unread: 0, isChannel: true }))
+    ];
+    const seen = new Set(base.map((c) => c.id));
+    for (const key of Object.keys(messages || {})) {
+      if (!key || key === 'all' || seen.has(key)) continue;
+      if (Array.isArray(messages[key]) && messages[key].length > 0) {
+        base.push({ id: key, name: key.replace(/^team-/, ''), unread: 0, isChannel: true });
+        seen.add(key);
+      }
+    }
+    return base;
+  };
+
+  const channelsList = isDemoMode ? initialChannels : buildLiveChannels();
+  const activeChannelObj = channelsList.find((c) => c.id === activeChannel);
+  const directList = isDemoMode ? initialDirectMessages : [];
 
   const [inputText, setInputText] = useState('');
   const [broadcastTarget, setBroadcastTarget] = useState('All active units');
   const [broadcastSeverity, setBroadcastSeverity] = useState('Critical');
   const [broadcastText, setBroadcastText] = useState('');
+  const messagesEndRef = useRef(null);
 
   const currentMessages = messages[activeChannel] || [];
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [activeChannel, currentMessages.length]);
 
   const handleSend = (e) => {
     e.preventDefault();
@@ -84,7 +112,7 @@ export const CommunicationPage = () => {
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', marginBottom: '20px' }}>
-          {initialChannels.map((c) => {
+          {channelsList.map((c) => {
             const isActive = activeChannel === c.id;
             return (
               <button
@@ -141,7 +169,12 @@ export const CommunicationPage = () => {
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-          {initialDirectMessages.map((dm) => {
+          {directList.length === 0 ? (
+            <div style={{ fontSize: '12px', color: '#475569', padding: '6px 10px' }}>
+              No direct unit threads
+            </div>
+          ) : (
+            directList.map((dm) => {
             const isActive = activeChannel === dm.id;
             return (
               <button
@@ -172,7 +205,8 @@ export const CommunicationPage = () => {
                 <span className="truncate">{dm.name}</span>
               </button>
             );
-          })}
+          })
+          )}
         </div>
       </div>
 
@@ -194,11 +228,15 @@ export const CommunicationPage = () => {
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Hash size={18} color="#3B82F6" />
               <h3 style={{ fontSize: '15px', fontWeight: 700, color: '#FFFFFF' }}>
-                {activeChannel.replace('-', ' ')}
+                {activeChannelObj?.name || activeChannel.replace(/-/g, ' ')}
               </h3>
             </div>
             <div style={{ fontSize: '11px', color: '#64748B', marginTop: '2px' }}>
-              Ernakulam primary emergency response coordinating channel
+              {isDemoMode
+                ? 'Ernakulam primary emergency response coordinating channel'
+                : activeChannel === 'command-net'
+                  ? `${user?.district || 'Dehradun, Uttarakhand'} primary emergency response coordinating channel`
+                  : `Direct tactical channel · ${activeChannelObj?.name || activeChannel}`}
             </div>
           </div>
 
@@ -230,8 +268,14 @@ export const CommunicationPage = () => {
             gap: '18px'
           }}
         >
-          {currentMessages.map((msg) => {
-            const isSelf = msg.isSelf;
+          {currentMessages.length === 0 ? (
+            <div style={{ margin: 'auto', textAlign: 'center', color: '#64748B', fontSize: '13px' }}>
+              No messages in #{activeChannelObj?.name || activeChannel} yet. Send a tactical message below.
+            </div>
+          ) : currentMessages.map((msg) => {
+            const isSelf = isDemoMode
+              ? msg.isSelf === true
+              : (msg.isSelf === true || msg.senderRole === 'command' || (Boolean(user?.id) && msg.senderId === user.id));
 
             return (
               <div
@@ -275,8 +319,11 @@ export const CommunicationPage = () => {
                     }}
                   >
                     <span style={{ fontSize: '12.5px', fontWeight: 600, color: '#FFFFFF' }}>
-                      {msg.sender}
+                      {isSelf && !String(msg.sender || '').includes('You') ? `${msg.sender} · You` : msg.sender}
                     </span>
+                    {msg.role && (
+                      <span style={{ fontSize: '10.5px', color: '#94A3B8' }}>{msg.role}</span>
+                    )}
                     <span style={{ fontSize: '11px', color: '#64748B' }}>{msg.time}</span>
                   </div>
 
@@ -292,7 +339,13 @@ export const CommunicationPage = () => {
                       boxShadow: '0 2px 8px rgba(0,0,0,0.3)'
                     }}
                   >
-                    {msg.text}
+                    {msg.locationTag && (
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: '#38BDF8', marginBottom: '4px', backgroundColor: 'rgba(56,189,248,0.1)', padding: '2px 8px', borderRadius: '6px' }}>
+                        <MapPin size={11} />
+                        <span>{msg.locationTag}</span>
+                      </div>
+                    )}
+                    <div>{msg.text}</div>
                   </div>
                 </div>
 
@@ -318,6 +371,7 @@ export const CommunicationPage = () => {
               </div>
             );
           })}
+          <div ref={messagesEndRef} />
         </div>
 
         {/* Message Input Bar */}

@@ -3,9 +3,18 @@ import crypto from 'crypto';
 const WS_MAGIC_STRING = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 export class SimpleWebSocketServer {
+  /**
+   * options.path           upgrade path (default /ws)
+   * options.authenticate   (req, url) => viewer | null   (required; null => 401)
+   * options.isOriginAllowed (origin) => boolean          (browser CSWSH protection)
+   * options.maxPayload     max bytes per frame (default 1 MiB)
+   */
   constructor(httpServer, options = {}) {
     this.httpServer = httpServer;
     this.path = options.path || '/ws';
+    this.authenticate = options.authenticate || (() => null);
+    this.isOriginAllowed = options.isOriginAllowed || (() => true);
+    this.maxPayload = options.maxPayload || 1024 * 1024;
     this.clients = new Set();
     this.messageHandlers = new Set();
 
@@ -17,23 +26,38 @@ export class SimpleWebSocketServer {
     this.pingInterval = setInterval(() => {
       this.pingAll();
     }, 25000);
+    this.pingInterval.unref();
+  }
+
+  reject(socket, statusLine) {
+    try { socket.write(`HTTP/1.1 ${statusLine}\r\nConnection: close\r\n\r\n`); } catch (_) { /* ignore */ }
+    socket.destroy();
   }
 
   handleUpgrade(req, socket, head) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    
-    // Accept /ws or root upgrade
-    if (this.path && url.pathname !== this.path && url.pathname !== '/') {
-      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
-      socket.destroy();
-      return;
+
+    if (url.pathname !== this.path) {
+      return this.reject(socket, '404 Not Found');
+    }
+
+    if (req.headers.origin && !this.isOriginAllowed(req.headers.origin, req)) {
+      return this.reject(socket, '403 Forbidden');
+    }
+
+    let viewer = null;
+    try {
+      viewer = this.authenticate(req, url);
+    } catch (_) {
+      viewer = null;
+    }
+    if (!viewer) {
+      return this.reject(socket, '401 Unauthorized');
     }
 
     const key = req.headers['sec-websocket-key'];
     if (!key) {
-      socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
-      socket.destroy();
-      return;
+      return this.reject(socket, '400 Bad Request');
     }
 
     const acceptKey = crypto
@@ -53,14 +77,25 @@ export class SimpleWebSocketServer {
     const client = {
       id: `client_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       socket,
-      role: 'unknown',
-      meta: {},
+      viewer,                // authenticated identity: { id, role, name, teamId, exp }
+      role: viewer.role,
+      meta: { name: viewer.name, teamId: viewer.teamId },
       alive: true,
       buffer: Buffer.alloc(0)
     };
 
     this.clients.add(client);
-    console.log(`[WebSocket] Client connected: ${client.id}`);
+    console.log(`[WebSocket] ${viewer.role} connected: ${client.id}`);
+
+    // Drop the connection when the access token expires.
+    if (viewer.exp) {
+      const ms = Math.min(Math.max(viewer.exp * 1000 - Date.now(), 0), 2 ** 31 - 1);
+      client.expiryTimer = setTimeout(() => {
+        this.sendToClient(client, { event: 'token_expired', data: { message: 'Access token expired, please log in again' } });
+        try { socket.end(); } catch (_) { /* ignore */ }
+      }, ms);
+      client.expiryTimer.unref();
+    }
 
     // If initial payload had head data
     if (head && head.length > 0) {
@@ -72,12 +107,14 @@ export class SimpleWebSocketServer {
     });
 
     socket.on('close', () => {
+      clearTimeout(client.expiryTimer);
       this.clients.delete(client);
       console.log(`[WebSocket] Client disconnected: ${client.id}`);
     });
 
     socket.on('error', (err) => {
       console.warn(`[WebSocket] Error for client ${client.id}:`, err.message);
+      clearTimeout(client.expiryTimer);
       this.clients.delete(client);
       try {
         socket.destroy();
@@ -90,6 +127,7 @@ export class SimpleWebSocketServer {
       data: {
         clientId: client.id,
         serverTime: new Date().toISOString(),
+        user: { id: viewer.id, role: viewer.role, name: viewer.name, teamId: viewer.teamId || null },
         message: 'Connected to ResQCore Real-Time WebSocket Gateway'
       }
     });
@@ -114,9 +152,16 @@ export class SimpleWebSocketServer {
         offset += 2;
       } else if (payloadLength === 127) {
         if (client.buffer.length < offset + 8) return;
-        // Read low 32-bit for safety in standard JS
         payloadLength = Number(client.buffer.readBigUInt64BE(offset));
         offset += 8;
+      }
+
+      if (payloadLength > this.maxPayload) {
+        // 1009 = message too big
+        try { client.socket.write(Buffer.from([0x88, 0x02, 0x03, 0xf1])); client.socket.end(); } catch (_) { /* ignore */ }
+        this.clients.delete(client);
+        client.buffer = Buffer.alloc(0);
+        return;
       }
 
       let maskingKey = null;
@@ -178,16 +223,18 @@ export class SimpleWebSocketServer {
         const text = payload.toString('utf8');
         const parsed = JSON.parse(text);
 
-        // Internal registration
+        // Legacy 'register' handshake. Identity comes from the verified token only;
+        // role / team claims sent by the client are ignored.
         if (parsed.type === 'register' || parsed.event === 'register') {
-          const regData = parsed.data || parsed;
-          client.role = regData.role || client.role;
-          client.meta = { ...client.meta, ...regData };
-          console.log(`[WebSocket] Client ${client.id} registered as '${client.role}' (${regData.name || 'unnamed'})`);
           this.sendToClient(client, {
             event: 'registered',
-            data: { role: client.role, id: client.id }
+            data: { role: client.viewer.role, id: client.id, userId: client.viewer.id, teamId: client.viewer.teamId || null }
           });
+          return;
+        }
+
+        if (parsed.type === 'ping' || parsed.event === 'ping') {
+          this.sendToClient(client, { event: 'pong', data: { time: Date.now() } });
           return;
         }
 

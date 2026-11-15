@@ -258,13 +258,22 @@ class HomeScreen extends StatelessWidget {
                                   mainAxisAlignment:
                                       MainAxisAlignment.spaceBetween,
                                   children: [
-                                    Text(
-                                      'Flood warning near you',
-                                      style: AppTextStyles.labelLg.copyWith(
-                                        color: AppColors.tertiaryFixed,
-                                        fontWeight: FontWeight.w700,
+                                    Expanded(
+                                      child: Text(
+                                        provider.isDemoMode
+                                            ? 'Flood warning near you'
+                                            : (provider.liveAlerts.isNotEmpty
+                                                ? (provider.liveAlerts.first['title'] ?? 'Active Advisory').toString()
+                                                : 'Live monitoring active'),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: AppTextStyles.labelLg.copyWith(
+                                          color: AppColors.tertiaryFixed,
+                                          fontWeight: FontWeight.w700,
+                                        ),
                                       ),
                                     ),
+                                    const SizedBox(width: 8),
                                     Container(
                                       padding: const EdgeInsets.symmetric(
                                         horizontal: 8,
@@ -276,7 +285,11 @@ class HomeScreen extends StatelessWidget {
                                         borderRadius: BorderRadius.circular(999),
                                       ),
                                       child: Text(
-                                        'Active Warning',
+                                        provider.isDemoMode
+                                            ? 'Active Warning'
+                                            : (provider.liveAlerts.isNotEmpty
+                                                ? (provider.liveAlerts.first['severity'] ?? 'Alert').toString()
+                                                : 'All Clear'),
                                         style: AppTextStyles.labelSm.copyWith(
                                           color: AppColors.tertiaryFixed,
                                           fontSize: 10,
@@ -288,7 +301,13 @@ class HomeScreen extends StatelessWidget {
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
-                                  'Low-lying wards of Fort Kochi inundated. Response teams actively clearing road barriers.',
+                                  provider.isDemoMode
+                                      ? 'Low-lying wards of Fort Kochi inundated. Response teams actively clearing road barriers.'
+                                      : (provider.liveAlerts.isNotEmpty
+                                          ? (provider.liveAlerts.first['message'] ?? provider.liveAlerts.first['description'] ?? 'Command Center advisory active.').toString()
+                                          : 'Connected to ResQCore Command Center. No severe advisories reported right now.'),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
                                   style: AppTextStyles.bodySm.copyWith(
                                     color: AppColors.textSecondary,
                                     height: 1.35,
@@ -893,11 +912,56 @@ class HomeScreen extends StatelessWidget {
           ),
           const SizedBox(height: 12),
 
-          // Incident Card
-          IncidentCard(
-            request: latestRequest,
-            onTap: () => RequestDetailDialog.show(context, latestRequest),
-          ),
+          // Incident Card (or empty state)
+          if (latestRequest != null)
+            IncidentCard(
+              request: latestRequest,
+              onTap: () => RequestDetailDialog.show(context, latestRequest),
+            )
+          else
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceContainer,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: AppColors.strokeBorder, width: 1),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.verified_user_outlined,
+                    color: Color(0xFF34D399),
+                    size: 24,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          provider.loadingRequests
+                              ? 'Syncing with Command Center...'
+                              : 'No active requests',
+                          style: AppTextStyles.labelLg.copyWith(
+                            color: AppColors.textWhite,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Submit an SOS or emergency request above if you need assistance.',
+                          style: AppTextStyles.bodySm.copyWith(
+                            color: AppColors.textSecondary,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
           const SizedBox(height: 20),
 
           // Bottom Tactical Quick Action Grid (2 Cards)

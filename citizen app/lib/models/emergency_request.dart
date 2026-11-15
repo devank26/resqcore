@@ -60,6 +60,35 @@ enum RequestStatus {
   }
 }
 
+class RequestedResource {
+  final String resourceId;
+  final String name;
+  final int quantity;
+
+  const RequestedResource({
+    required this.resourceId,
+    required this.name,
+    required this.quantity,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'resourceId': resourceId,
+        'name': name,
+        'quantity': quantity,
+      };
+
+  factory RequestedResource.fromJson(Map<String, dynamic> json) {
+    final id = (json['resourceId'] ?? json['id'] ?? '').toString();
+    final label = (json['name'] ?? id).toString();
+    final qty = int.tryParse((json['quantity'] ?? 0).toString()) ?? 0;
+    return RequestedResource(
+      resourceId: id,
+      name: label,
+      quantity: qty,
+    );
+  }
+}
+
 class EmergencyRequest {
   final String id;
   final String title;
@@ -74,6 +103,7 @@ class EmergencyRequest {
   final String contactNumber;
   final int photoCount;
   final String? photoAssetPath;
+  final List<RequestedResource> requestedResources;
   final DateTime createdAt;
   final bool isRecent;
 
@@ -91,6 +121,7 @@ class EmergencyRequest {
     required this.contactNumber,
     this.photoCount = 1,
     this.photoAssetPath,
+    this.requestedResources = const [],
     required this.createdAt,
     this.isRecent = true,
   });
@@ -109,6 +140,7 @@ class EmergencyRequest {
     String? contactNumber,
     int? photoCount,
     String? photoAssetPath,
+    List<RequestedResource>? requestedResources,
     DateTime? createdAt,
     bool? isRecent,
   }) {
@@ -126,6 +158,7 @@ class EmergencyRequest {
       contactNumber: contactNumber ?? this.contactNumber,
       photoCount: photoCount ?? this.photoCount,
       photoAssetPath: photoAssetPath ?? this.photoAssetPath,
+      requestedResources: requestedResources ?? this.requestedResources,
       createdAt: createdAt ?? this.createdAt,
       isRecent: isRecent ?? this.isRecent,
     );

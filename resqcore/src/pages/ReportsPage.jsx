@@ -12,9 +12,11 @@ import {
 } from 'lucide-react';
 import { MapView } from '../components/common/MapView';
 import { useApp } from '../context/AppContext';
+import { useCurrentDate } from '../utils/dateUtils';
 
 export const ReportsPage = () => {
   const { isDemoMode } = useApp();
+  const currentYear = useCurrentDate().getFullYear();
 
   const resolvedIncidents = isDemoMode ? '18' : '0';
   const resolvedPct = isDemoMode ? '+32% vs Period 03' : '0% vs Period 03';
@@ -80,7 +82,7 @@ export const ReportsPage = () => {
             }}
           >
             <Calendar size={15} color="#3B82F6" />
-            <span>Operational Period 04 · {isDemoMode ? 'Kerala 2026' : 'Uttarakhand 2026'}</span>
+            <span>Operational Period 04 · {isDemoMode ? 'Kerala' : 'Uttarakhand'} {currentYear}</span>
           </div>
 
           <button

@@ -9,21 +9,19 @@ import {
   Check
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import {
-  initialIncidents,
-  initialTeams,
-  initialMessages,
-  initialAlerts,
-  initialCameras
-} from '../data/initialData';
 
 export const Login = () => {
-  const { setIsAuthenticated, user, setUser, isDemoMode, setIsDemoMode, setIncidents, setTeams, setMessages, setAlerts, setToasts, setCameras } = useApp();
-  const [email, setEmail] = useState('ananya.kumar@resqcore.gov.in');
-  const [password, setPassword] = useState('••••••••••••');
+  const { login, registerCommand, enterDemoMode } = useApp();
+  const [mode, setMode] = useState('login'); // 'login' | 'register'
+  const [fullName, setFullName] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [role, setRole] = useState('Command Operator');
   const [rememberMe, setRememberMe] = useState(true);
   const [isRoleDropdownOpen, setIsRoleDropdownOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
   const roles = [
     'Command Operator',
@@ -31,37 +29,33 @@ export const Login = () => {
     'District Administrator'
   ];
 
-  const handleSignIn = (e, isDemo = false) => {
+  const handleSignIn = async (e, isDemo = false) => {
     e.preventDefault();
+    setErrorMsg('');
     if (isDemo) {
-      setIsDemoMode(true);
-      setIncidents(initialIncidents);
-      setTeams(initialTeams);
-      setMessages(initialMessages);
-      setAlerts(initialAlerts);
-      setCameras(initialCameras);
-      setToasts([
-        {
-          id: 'toast-initial-high',
-          type: 'high-incident',
-          title: 'New High incident',
-          code: 'INC-2048 · Flooding in Fort Kochi',
-          detail: '320 people affected · Verification required',
-          incidentId: 'INC-2048'
-        }
-      ]);
-      setUser(prev => ({ ...prev, role, email, district: 'Ernakulam, Kerala' }));
-    } else {
-      setIsDemoMode(false);
-      setIncidents([]);
-      setTeams([]);
-      setMessages({});
-      setAlerts([]);
-      setCameras([]);
-      setToasts([]);
-      setUser(prev => ({ ...prev, role, email, district: 'Dehradun, Uttarakhand' }));
+      enterDemoMode(email || 'ananya.kumar@resqcore.gov.in', role);
+      return;
     }
-    setIsAuthenticated(true);
+    if (!email.trim() || !password) {
+      setErrorMsg('Please enter your work email and password.');
+      return;
+    }
+    if (mode === 'register' && !fullName.trim()) {
+      setErrorMsg('Please enter your full name.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      if (mode === 'register') {
+        await registerCommand({ name: fullName, email, password, inviteCode, remember: rememberMe });
+      } else {
+        await login(email, password, rememberMe);
+      }
+    } catch (err) {
+      setErrorMsg(err.message || (mode === 'register' ? 'Registration failed' : 'Sign-in failed'));
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -278,10 +272,97 @@ export const Login = () => {
             Welcome to ResQCore
           </h2>
           <p style={{ fontSize: '14px', color: '#64748B', marginTop: '6px' }}>
-            Sign in to your disaster response workspace.
+            {mode === 'register'
+              ? 'Create a Command Center operator account.'
+              : 'Sign in to your disaster response workspace.'}
           </p>
 
-          <form onSubmit={handleSignIn} style={{ marginTop: '32px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          {/* Mode Toggle */}
+          <div
+            style={{
+              display: 'flex',
+              gap: '6px',
+              marginTop: '20px',
+              padding: '4px',
+              backgroundColor: '#0D1527',
+              border: '1px solid #1A263D',
+              borderRadius: '10px'
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => { setMode('login'); setErrorMsg(''); }}
+              style={{
+                flex: 1,
+                padding: '8px 12px',
+                borderRadius: '7px',
+                fontSize: '13px',
+                fontWeight: 600,
+                backgroundColor: mode === 'login' ? '#2563EB' : 'transparent',
+                color: mode === 'login' ? '#FFFFFF' : '#94A3B8'
+              }}
+            >
+              Sign in
+            </button>
+            <button
+              type="button"
+              onClick={() => { setMode('register'); setErrorMsg(''); }}
+              style={{
+                flex: 1,
+                padding: '8px 12px',
+                borderRadius: '7px',
+                fontSize: '13px',
+                fontWeight: 600,
+                backgroundColor: mode === 'register' ? '#2563EB' : 'transparent',
+                color: mode === 'register' ? '#FFFFFF' : '#94A3B8'
+              }}
+            >
+              Create account
+            </button>
+          </div>
+
+          <form onSubmit={handleSignIn} style={{ marginTop: '24px', display: 'flex', flexDirection: 'column', gap: '18px' }}>
+            {mode === 'register' && (
+              <div>
+                <label
+                  style={{
+                    display: 'block',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    color: '#94A3B8',
+                    marginBottom: '8px'
+                  }}
+                >
+                  Full name
+                </label>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '12px 14px',
+                    backgroundColor: '#0D1527',
+                    border: '1px solid #1A263D',
+                    borderRadius: '10px'
+                  }}
+                >
+                  <input
+                    type="text"
+                    placeholder="Devank"
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    required
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#FFFFFF',
+                      fontSize: '13.5px',
+                      width: '100%'
+                    }}
+                  />
+                </div>
+              </div>
+            )}
             {/* Email Field */}
             <div>
               <label
@@ -482,9 +563,67 @@ export const Login = () => {
               </a>
             </div>
 
+            {errorMsg && (
+              <div
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  backgroundColor: 'rgba(239, 68, 68, 0.12)',
+                  border: '1px solid rgba(239, 68, 68, 0.35)',
+                  color: '#FCA5A5',
+                  fontSize: '12.5px',
+                  fontWeight: 500
+                }}
+              >
+                {errorMsg}
+              </div>
+            )}
+
+            {mode === 'register' && (
+              <div>
+                <label
+                  style={{
+                    display: 'block',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    color: '#94A3B8',
+                    marginBottom: '8px'
+                  }}
+                >
+                  Invite code <span style={{ color: '#64748B', fontWeight: 400 }}>(optional in dev)</span>
+                </label>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '12px 14px',
+                    backgroundColor: '#0D1527',
+                    border: '1px solid #1A263D',
+                    borderRadius: '10px'
+                  }}
+                >
+                  <input
+                    type="text"
+                    placeholder="COMMAND_INVITE_CODE if configured"
+                    value={inviteCode}
+                    onChange={(e) => setInviteCode(e.target.value)}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#FFFFFF',
+                      fontSize: '13.5px',
+                      width: '100%'
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
             {/* CTA Button */}
             <button
               type="submit"
+              disabled={submitting}
               onClick={(e) => handleSignIn(e, false)}
               style={{
                 display: 'flex',
@@ -499,12 +638,22 @@ export const Login = () => {
                 fontWeight: 600,
                 fontSize: '14.5px',
                 boxShadow: '0 4px 16px rgba(37, 99, 235, 0.4)',
-                marginTop: '6px'
+                marginTop: '6px',
+                opacity: submitting ? 0.7 : 1,
+                cursor: submitting ? 'not-allowed' : 'pointer'
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#3B82F6')}
-              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = '#2563EB')}
+              onMouseEnter={(e) => { if (!submitting) e.currentTarget.style.backgroundColor = '#3B82F6'; }}
+              onMouseLeave={(e) => { if (!submitting) e.currentTarget.style.backgroundColor = '#2563EB'; }}
             >
-              <span>Sign in to command center</span>
+              <span>
+                {submitting
+                  ? mode === 'register'
+                    ? 'Creating account...'
+                    : 'Signing in...'
+                  : mode === 'register'
+                  ? 'Create account & enter'
+                  : 'Sign in to command center'}
+              </span>
               <ArrowRight size={16} />
             </button>
 

@@ -34,7 +34,44 @@ class _TeamsScreenState extends State<TeamsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final teamAlpha = widget.appState.teams.first;
+    final teams = widget.appState.teams;
+    final RescueTeam? activeTeam = teams.isEmpty
+        ? null
+        : teams.firstWhere(
+            (t) =>
+                t.id == widget.appState.teamId ||
+                t.name.toLowerCase() == widget.appState.teamName.toLowerCase(),
+            orElse: () => teams.first,
+          );
+
+    if (activeTeam == null) {
+      return Scaffold(
+        backgroundColor: TacticalColors.surface,
+        appBar: TacticalHeader(
+          title: 'Teams',
+          appState: widget.appState,
+          onSosPressed: widget.onSosPressed,
+        ),
+        body: const Center(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(color: TacticalColors.primary),
+                SizedBox(height: 14),
+                Text(
+                  'Registering rescue unit with Command Center...',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: TacticalColors.onSurfaceVariant, fontSize: 13),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    final teamAlpha = activeTeam;
 
     return Scaffold(
       backgroundColor: TacticalColors.surface,
@@ -95,9 +132,15 @@ class _TeamsScreenState extends State<TeamsScreen> {
                   ),
                   child: Row(
                     children: [
-                      _buildTab('Active (8)', 'Active', hasPulse: true),
-                      _buildTab('Nearby (3)', 'Nearby', hasNearMe: true),
-                      _buildTab('All 14 Teams', 'All'),
+                      _buildTab(
+                        widget.appState.isDemoMode
+                            ? 'Active (8)'
+                            : 'Online (${teams.length})',
+                        'Active',
+                        hasPulse: true,
+                      ),
+                      _buildTab('Nearby', 'Nearby', hasNearMe: true),
+                      _buildTab('All Units', 'All'),
                     ],
                   ),
                 ),
@@ -226,22 +269,22 @@ class _TeamsScreenState extends State<TeamsScreen> {
                   ),
                   const SizedBox(height: 8),
 
-                  const Text(
-                    'Team Alpha',
-                    style: TextStyle(
+                  Text(
+                    teamAlpha.name,
+                    style: const TextStyle(
                       fontSize: 20,
                       fontWeight: FontWeight.bold,
                       color: TacticalColors.onSurface,
                     ),
                   ),
                   const SizedBox(height: 2),
-                  const Row(
+                  Row(
                     children: [
-                      Icon(Icons.terrain, color: TacticalColors.tertiary, size: 14),
-                      SizedBox(width: 4),
+                      const Icon(Icons.terrain, color: TacticalColors.tertiary, size: 14),
+                      const SizedBox(width: 4),
                       Text(
-                        'Mountain Quick Response',
-                        style: TextStyle(
+                        teamAlpha.sector,
+                        style: const TextStyle(
                           fontSize: 12,
                           color: TacticalColors.onSurfaceVariant,
                         ),

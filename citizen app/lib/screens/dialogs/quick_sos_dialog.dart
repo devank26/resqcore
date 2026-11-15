@@ -52,9 +52,15 @@ class _QuickSosDialogState extends State<QuickSosDialog>
           _sosId = req.id;
         });
       }
-    } catch (_) {
+    } catch (e) {
       if (mounted) {
         setState(() => _isDispatching = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(e.toString().replaceFirst('Bad state: ', '')),
+            backgroundColor: AppColors.error,
+          ),
+        );
       }
     }
   }

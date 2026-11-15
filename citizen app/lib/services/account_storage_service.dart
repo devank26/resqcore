@@ -8,7 +8,38 @@ import '../models/user_profile.dart';
 /// file-based and in-memory fallbacks so storage operations never throw or block.
 class AccountStorageService {
   static const String _kAccountsKey = 'resqcore_accounts';
+  static const String _kAuthTokenKey = 'resqcore_citizen_jwt';
   static final List<UserProfile> _memoryCache = [];
+  static String _memoryToken = '';
+
+  static Future<void> saveToken(String token) async {
+    _memoryToken = token.trim();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (_memoryToken.isNotEmpty) {
+        await prefs.setString(_kAuthTokenKey, _memoryToken);
+      } else {
+        await prefs.remove(_kAuthTokenKey);
+      }
+    } catch (_) {}
+  }
+
+  static Future<String> loadToken() async {
+    if (_memoryToken.isNotEmpty) return _memoryToken;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _memoryToken = (prefs.getString(_kAuthTokenKey) ?? '').trim();
+    } catch (_) {}
+    return _memoryToken;
+  }
+
+  static Future<void> clearToken() async {
+    _memoryToken = '';
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_kAuthTokenKey);
+    } catch (_) {}
+  }
 
   static File? _getFallbackFile() {
     try {

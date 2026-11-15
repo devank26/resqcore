@@ -51,6 +51,7 @@ class _VolunteersScreenState extends State<VolunteersScreen> {
         final client = HttpClient();
         client.connectionTimeout = const Duration(seconds: 3);
         final request = await client.getUrl(Uri.parse('$host/api/volunteers'));
+        TacticalSyncService.applyAuthHeader(request);
         final response = await request.close();
         if (response.statusCode == 200) {
           final body = await response.transform(utf8.decoder).join();
@@ -207,6 +208,7 @@ class _VolunteersScreenState extends State<VolunteersScreen> {
         client.connectionTimeout = const Duration(seconds: 3);
         final request = await client.postUrl(Uri.parse('$host/api/volunteers/register'));
         request.headers.contentType = ContentType.json;
+        TacticalSyncService.applyAuthHeader(request);
         request.write(jsonEncode({
           'name': name,
           'phone': phone,

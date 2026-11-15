@@ -3,20 +3,58 @@ import 'dart:convert';
 import 'dart:io';
 
 class TacticalSyncService {
-  static const List<String> candidateHosts = [
-    'http://10.0.2.2:5000',
-    'http://localhost:5000',
-    'http://127.0.0.1:5000',
-  ];
+  static const String _envApiBaseUrl =
+      String.fromEnvironment('API_BASE_URL', defaultValue: '');
+  static const String _envRescueToken =
+      String.fromEnvironment('RESCUE_TOKEN', defaultValue: '');
+
+  static List<String> get candidateHosts {
+    final trimmed = _envApiBaseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    if (trimmed.isNotEmpty) {
+      return [trimmed];
+    }
+    return const [
+      'http://10.0.2.2:5000',
+      'http://localhost:5000',
+      'http://127.0.0.1:5000',
+    ];
+  }
 
   static String _activeHost = candidateHosts.first;
+  static String _authToken = _envRescueToken;
+  static String? _teamId;
   static WebSocket? _webSocket;
   static Timer? _reconnectTimer;
   static Timer? _pollFallbackTimer;
   static bool _isConnected = false;
 
   static String get activeHost => _activeHost;
+  static String get authToken => _authToken;
+  static String? get activeTeamId => _teamId;
   static bool get isConnected => _isConnected;
+
+  static void setAuthToken(String? token) {
+    final cleaned = (token ?? '').trim();
+    if (cleaned.isNotEmpty) {
+      _authToken = cleaned;
+    } else {
+      _authToken = _envRescueToken;
+    }
+  }
+
+  static void setTeamId(String? teamId) {
+    final cleaned = (teamId ?? '').trim();
+    _teamId = cleaned.isNotEmpty ? cleaned : null;
+  }
+
+  static void applyAuthHeader(HttpClientRequest request) {
+    if (_authToken.isNotEmpty) {
+      request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $_authToken');
+    }
+    if (_teamId != null && _teamId!.isNotEmpty) {
+      request.headers.set('x-team-id', _teamId!);
+    }
+  }
 
   /// Check connectivity and discover the active backend host
   static Future<bool> checkConnection() async {
@@ -39,6 +77,49 @@ class TacticalSyncService {
     return false;
   }
 
+  /// Authenticate rescue operative with backend and receive canonical teamId + token
+  static Future<Map<String, dynamic>?> loginRescueTeam({
+    required String role,
+    required String phone,
+    required String name,
+    String? teamName,
+    String? callsign,
+  }) async {
+    final resolvedTeamName =
+        (teamName != null && teamName.trim().isNotEmpty) ? teamName.trim() : name;
+    final payload = jsonEncode({
+      'role': 'rescue',
+      'identifier': phone,
+      'name': name,
+      'teamName': resolvedTeamName,
+      if (callsign != null && callsign.trim().isNotEmpty) 'callsign': callsign.trim(),
+      'specialization': role,
+      'teamRole': role,
+    });
+
+    for (final host in [_activeHost, ...candidateHosts]) {
+      try {
+        final client = HttpClient();
+        client.connectionTimeout = const Duration(seconds: 4);
+        final request = await client.postUrl(Uri.parse('$host/api/auth/login'));
+        request.headers.contentType = ContentType.json;
+        applyAuthHeader(request);
+        request.write(payload);
+        final response = await request.close();
+        final body = await response.transform(utf8.decoder).join();
+        if (response.statusCode == 200) {
+          _activeHost = host;
+          final data = jsonDecode(body) as Map<String, dynamic>;
+          if (data['token'] is String && (data['token'] as String).isNotEmpty) {
+            setAuthToken(data['token'] as String);
+          }
+          return data;
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
   /// Connect to the Real-Time WebSocket stream
   static Future<void> connectRealtime({
     required String teamId,
@@ -50,19 +131,35 @@ class TacticalSyncService {
 
     final ok = await checkConnection();
     if (!ok) {
-      // Start polling fallback if backend is momentarily unreachable
       _startPollFallback(onEvent);
       return;
     }
 
-    final wsUri = _activeHost.replaceFirst('http://', 'ws://').replaceFirst('https://', 'wss://') + '/ws';
+    final resolvedTeamId = teamId.trim().isNotEmpty ? teamId.trim() : (_teamId ?? '');
+    if (resolvedTeamId.isNotEmpty) {
+      _teamId = resolvedTeamId;
+    }
+    final baseWs = _activeHost
+        .replaceFirst('http://', 'ws://')
+        .replaceFirst('https://', 'wss://');
+    final queryParams = <String>[
+      if (_authToken.isNotEmpty) 'token=${Uri.encodeComponent(_authToken)}',
+      if (resolvedTeamId.isNotEmpty) 'teamId=${Uri.encodeComponent(resolvedTeamId)}',
+    ];
+    final wsUri = queryParams.isNotEmpty ? '$baseWs/ws?${queryParams.join('&')}' : '$baseWs/ws';
 
     try {
-      _webSocket = await WebSocket.connect(wsUri).timeout(const Duration(seconds: 4));
+      final headers = <String, dynamic>{};
+      if (_authToken.isNotEmpty) {
+        headers[HttpHeaders.authorizationHeader] = 'Bearer $_authToken';
+      }
+      if (resolvedTeamId.isNotEmpty) {
+        headers['x-team-id'] = resolvedTeamId;
+      }
+      _webSocket = await WebSocket.connect(wsUri, headers: headers)
+          .timeout(const Duration(seconds: 4));
       _isConnected = true;
-      print('[RescueApp Sync] Connected to Real-Time WebSocket: $wsUri');
 
-      // Send registration payload
       _webSocket?.add(jsonEncode({
         'type': 'register',
         'role': 'rescue_team',
@@ -76,22 +173,20 @@ class TacticalSyncService {
           try {
             final parsed = jsonDecode(data.toString()) as Map<String, dynamic>;
             onEvent(parsed);
-          } catch (e) {
-            print('[RescueApp Sync] WS Parse error: $e');
-          }
+          } catch (_) {}
         },
-        onError: (err) {
-          print('[RescueApp Sync] WS Error: $err');
-          _scheduleReconnect(teamId: teamId, role: role, name: name, onEvent: onEvent);
+        onError: (_) {
+          _scheduleReconnect(
+              teamId: teamId, role: role, name: name, onEvent: onEvent);
         },
         onDone: () {
-          print('[RescueApp Sync] WS Connection closed');
-          _scheduleReconnect(teamId: teamId, role: role, name: name, onEvent: onEvent);
+          _scheduleReconnect(
+              teamId: teamId, role: role, name: name, onEvent: onEvent);
         },
       );
-    } catch (e) {
-      print('[RescueApp Sync] WS Connect error: $e');
-      _scheduleReconnect(teamId: teamId, role: role, name: name, onEvent: onEvent);
+    } catch (_) {
+      _scheduleReconnect(
+          teamId: teamId, role: role, name: name, onEvent: onEvent);
     }
   }
 
@@ -110,21 +205,31 @@ class TacticalSyncService {
     });
   }
 
-  static void _startPollFallback(void Function(Map<String, dynamic> event) onEvent) {
+  static void _startPollFallback(
+      void Function(Map<String, dynamic> event) onEvent) {
     if (_pollFallbackTimer != null && _pollFallbackTimer!.isActive) return;
 
     _pollFallbackTimer = Timer.periodic(const Duration(seconds: 4), (_) async {
       try {
         final incidents = await fetchIncidents();
-        if (incidents.isNotEmpty) {
-          onEvent({'event': 'incidents_sync', 'data': {'incidents': incidents}});
-        }
+        onEvent({
+          'event': 'incidents_sync',
+          'data': {'incidents': incidents}
+        });
+      } catch (_) {}
+      try {
+        final teams = await fetchTeams();
+        onEvent({
+          'event': 'teams_sync',
+          'data': {'teams': teams}
+        });
       } catch (_) {}
       try {
         final messages = await fetchChatMessages();
-        if (messages.isNotEmpty) {
-          onEvent({'event': 'chat_sync', 'data': {'messages': messages}});
-        }
+        onEvent({
+          'event': 'chat_sync',
+          'data': {'messages': messages}
+        });
       } catch (_) {}
     });
   }
@@ -144,8 +249,9 @@ class TacticalSyncService {
     for (final host in [_activeHost, ...candidateHosts]) {
       try {
         final client = HttpClient();
-        client.connectionTimeout = const Duration(seconds: 2);
+        client.connectionTimeout = const Duration(seconds: 3);
         final request = await client.getUrl(Uri.parse('$host/api/incidents'));
+        applyAuthHeader(request);
         final response = await request.close();
         if (response.statusCode == 200) {
           _activeHost = host;
@@ -161,13 +267,62 @@ class TacticalSyncService {
     return [];
   }
 
-  /// Fetch tactical chat messages from Backend
-  static Future<List<Map<String, dynamic>>> fetchChatMessages({String channel = 'all'}) async {
+  /// Fetch registered rescue teams from Backend
+  static Future<List<Map<String, dynamic>>> fetchTeams() async {
     for (final host in [_activeHost, ...candidateHosts]) {
       try {
         final client = HttpClient();
-        client.connectionTimeout = const Duration(seconds: 2);
-        final request = await client.getUrl(Uri.parse('$host/api/chat/messages?channel=$channel'));
+        client.connectionTimeout = const Duration(seconds: 3);
+        final request = await client.getUrl(Uri.parse('$host/api/teams'));
+        applyAuthHeader(request);
+        final response = await request.close();
+        if (response.statusCode == 200) {
+          _activeHost = host;
+          final responseBody = await response.transform(utf8.decoder).join();
+          final data = jsonDecode(responseBody) as Map<String, dynamic>;
+          final list = data['teams'] as List<dynamic>?;
+          if (list != null) {
+            return list.cast<Map<String, dynamic>>();
+          }
+        }
+      } catch (_) {}
+    }
+    return [];
+  }
+
+  /// Fetch relief shelters from Backend
+  static Future<List<Map<String, dynamic>>> fetchShelters() async {
+    for (final host in [_activeHost, ...candidateHosts]) {
+      try {
+        final client = HttpClient();
+        client.connectionTimeout = const Duration(seconds: 3);
+        final request = await client.getUrl(Uri.parse('$host/api/shelters'));
+        applyAuthHeader(request);
+        final response = await request.close();
+        if (response.statusCode == 200) {
+          _activeHost = host;
+          final responseBody = await response.transform(utf8.decoder).join();
+          final data = jsonDecode(responseBody) as Map<String, dynamic>;
+          final list = data['shelters'] as List<dynamic>?;
+          if (list != null) {
+            return list.cast<Map<String, dynamic>>();
+          }
+        }
+      } catch (_) {}
+    }
+    return [];
+  }
+
+  /// Fetch tactical chat messages from Backend
+  static Future<List<Map<String, dynamic>>> fetchChatMessages(
+      {String channel = 'all'}) async {
+    for (final host in [_activeHost, ...candidateHosts]) {
+      try {
+        final client = HttpClient();
+        client.connectionTimeout = const Duration(seconds: 3);
+        final request = await client
+            .getUrl(Uri.parse('$host/api/chat/messages?channel=$channel'));
+        applyAuthHeader(request);
         final response = await request.close();
         if (response.statusCode == 200) {
           _activeHost = host;
@@ -179,11 +334,22 @@ class TacticalSyncService {
             return messagesObj.cast<Map<String, dynamic>>();
           } else if (messagesObj is Map) {
             final List<Map<String, dynamic>> flat = [];
-            for (final list in messagesObj.values) {
+            for (final entry in messagesObj.entries) {
+              final ch = entry.key.toString();
+              final list = entry.value;
               if (list is List) {
-                flat.addAll(list.cast<Map<String, dynamic>>());
+                for (final raw in list) {
+                  if (raw is Map<String, dynamic>) {
+                    final item = Map<String, dynamic>.from(raw);
+                    item['channel'] ??= ch;
+                    flat.add(item);
+                  }
+                }
               }
             }
+            flat.sort((a, b) => (a['createdAt'] ?? a['timestamp'] ?? '')
+                .toString()
+                .compareTo((b['createdAt'] ?? b['timestamp'] ?? '').toString()));
             return flat;
           }
         }
@@ -194,45 +360,56 @@ class TacticalSyncService {
 
   /// Send tactical chat message to Command Center & other teams
   static Future<bool> sendChatMessage({
+    String? id,
     required String sender,
     required String role,
     required String text,
     String? channel,
     String? locationTag,
   }) async {
-    final payload = jsonEncode({
-      'channel': channel ?? 'ernakulam-command',
+    final resolvedChannel =
+        (channel != null && channel.trim().isNotEmpty) ? channel.trim() : 'command-net';
+    final trimmedInitials = sender
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((s) => s.isNotEmpty)
+        .take(2)
+        .map((s) => s[0].toUpperCase())
+        .join();
+    final mapPayload = <String, dynamic>{
+      if (id != null && id.isNotEmpty) 'id': id,
+      'channel': resolvedChannel,
       'sender': sender,
       'role': role,
       'text': text,
-      'locationTag': locationTag,
-      'initials': sender.isNotEmpty ? sender[0].toUpperCase() : 'RT',
-    });
+      if (locationTag != null && locationTag.isNotEmpty) 'locationTag': locationTag,
+      'initials': trimmedInitials.isNotEmpty ? trimmedInitials : 'RT',
+    };
+    final payload = jsonEncode(mapPayload);
 
-    // Try WebSocket first
-    if (_webSocket != null && _webSocket?.readyState == WebSocket.open) {
-      try {
-        _webSocket?.add(jsonEncode({
-          'type': 'chat_message',
-          'data': jsonDecode(payload),
-        }));
-        return true;
-      } catch (_) {}
-    }
-
-    // Fallback to HTTP
     for (final host in [_activeHost, ...candidateHosts]) {
       try {
         final client = HttpClient();
         client.connectionTimeout = const Duration(seconds: 3);
         final request = await client.postUrl(Uri.parse('$host/api/chat/send'));
         request.headers.contentType = ContentType.json;
+        applyAuthHeader(request);
         request.write(payload);
         final response = await request.close();
         if (response.statusCode == 200 || response.statusCode == 201) {
           _activeHost = host;
           return true;
         }
+      } catch (_) {}
+    }
+
+    if (_webSocket != null && _webSocket?.readyState == WebSocket.open) {
+      try {
+        _webSocket?.add(jsonEncode({
+          'type': 'chat_message',
+          'data': mapPayload,
+        }));
+        return true;
       } catch (_) {}
     }
     return false;
@@ -246,25 +423,35 @@ class TacticalSyncService {
     required String description,
     required String teamName,
     String reporter = 'Rescue Team Operative',
-    double lat = 30.5562,
-    double lng = 79.5670,
+    double? lat,
+    double? lng,
   }) async {
-    final payload = jsonEncode({
+    final bodyMap = <String, dynamic>{
       'title': title,
       'location': location,
       'severity': severity,
       'description': description,
       'teamName': teamName,
       'reporter': reporter,
-      'coordinates': {'latitude': lat, 'longitude': lng, 'lat': lat, 'lng': lng},
-    });
+    };
+    if (lat != null && lng != null) {
+      bodyMap['coordinates'] = {
+        'latitude': lat,
+        'longitude': lng,
+        'lat': lat,
+        'lng': lng,
+      };
+    }
+    final payload = jsonEncode(bodyMap);
 
     for (final host in [_activeHost, ...candidateHosts]) {
       try {
         final client = HttpClient();
         client.connectionTimeout = const Duration(seconds: 3);
-        final request = await client.postUrl(Uri.parse('$host/api/incidents/report'));
+        final request =
+            await client.postUrl(Uri.parse('$host/api/incidents/report'));
         request.headers.contentType = ContentType.json;
+        applyAuthHeader(request);
         request.write(payload);
         final response = await request.close();
         if (response.statusCode == 200 || response.statusCode == 201) {
@@ -282,21 +469,28 @@ class TacticalSyncService {
     required String teamId,
     required String teamName,
     required String operatorName,
-    String location = 'Tactical Sector Pin',
-    double lat = 30.5562,
-    double lng = 79.5670,
+    required String location,
+    double? lat,
+    double? lng,
     String? notes,
   }) async {
-    final payload = jsonEncode({
+    final bodyMap = <String, dynamic>{
       'teamId': teamId,
       'teamName': teamName,
       'operatorName': operatorName,
       'location': location,
-      'coordinates': {'lat': lat, 'lng': lng, 'latitude': lat, 'longitude': lng},
       'notes': notes ?? 'Immediate tactical distress beacon triggered.',
-    });
+    };
+    if (lat != null && lng != null) {
+      bodyMap['coordinates'] = {
+        'lat': lat,
+        'lng': lng,
+        'latitude': lat,
+        'longitude': lng,
+      };
+    }
+    final payload = jsonEncode(bodyMap);
 
-    // Try WS first
     if (_webSocket != null && _webSocket?.readyState == WebSocket.open) {
       try {
         _webSocket?.add(jsonEncode({'type': 'sos', 'data': jsonDecode(payload)}));
@@ -309,6 +503,7 @@ class TacticalSyncService {
         client.connectionTimeout = const Duration(seconds: 3);
         final request = await client.postUrl(Uri.parse('$host/api/teams/sos'));
         request.headers.contentType = ContentType.json;
+        applyAuthHeader(request);
         request.write(payload);
         final response = await request.close();
         if (response.statusCode == 200 || response.statusCode == 201) {
@@ -334,25 +529,27 @@ class TacticalSyncService {
       'notes': notes,
     });
 
-    // Try WS first
-    if (_webSocket != null && _webSocket?.readyState == WebSocket.open) {
-      try {
-        _webSocket?.add(jsonEncode({'type': 'update_status', 'data': jsonDecode(payload)}));
-      } catch (_) {}
-    }
-
     for (final host in [_activeHost, ...candidateHosts]) {
       try {
         final client = HttpClient();
         client.connectionTimeout = const Duration(seconds: 3);
-        final request = await client.postUrl(Uri.parse('$host/api/incidents/update'));
+        final request =
+            await client.postUrl(Uri.parse('$host/api/incidents/update'));
         request.headers.contentType = ContentType.json;
+        applyAuthHeader(request);
         request.write(payload);
         final response = await request.close();
         if (response.statusCode == 200) {
           _activeHost = host;
           return true;
         }
+      } catch (_) {}
+    }
+    if (_webSocket != null && _webSocket?.readyState == WebSocket.open) {
+      try {
+        _webSocket?.add(
+            jsonEncode({'type': 'update_status', 'data': jsonDecode(payload)}));
+        return true;
       } catch (_) {}
     }
     return false;
@@ -376,7 +573,8 @@ class TacticalSyncService {
 
     if (_webSocket != null && _webSocket?.readyState == WebSocket.open) {
       try {
-        _webSocket?.add(jsonEncode({'type': 'telemetry', 'data': jsonDecode(payload)}));
+        _webSocket
+            ?.add(jsonEncode({'type': 'telemetry', 'data': jsonDecode(payload)}));
         return true;
       } catch (_) {}
     }
@@ -385,8 +583,10 @@ class TacticalSyncService {
       try {
         final client = HttpClient();
         client.connectionTimeout = const Duration(seconds: 2);
-        final request = await client.postUrl(Uri.parse('$host/api/teams/telemetry'));
+        final request =
+            await client.postUrl(Uri.parse('$host/api/teams/telemetry'));
         request.headers.contentType = ContentType.json;
+        applyAuthHeader(request);
         request.write(payload);
         final response = await request.close();
         if (response.statusCode == 200) {

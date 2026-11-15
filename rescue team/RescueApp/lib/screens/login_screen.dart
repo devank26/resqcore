@@ -19,6 +19,7 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
+  final TextEditingController _teamNameController = TextEditingController(text: 'Bravo 02');
   final TextEditingController _phoneController = TextEditingController(text: '98110 44201');
   final TextEditingController _otpController = TextEditingController(text: '739201');
   String _selectedRole = 'Team Leader / Commander';
@@ -34,6 +35,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   void dispose() {
+    _teamNameController.dispose();
     _phoneController.dispose();
     _otpController.dispose();
     super.dispose();
@@ -51,7 +53,13 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _submitAuth() {
-    widget.appState.login(_selectedRole, '+91 ${_phoneController.text.trim()}');
+    final unitName = _teamNameController.text.trim();
+    widget.appState.login(
+      _selectedRole,
+      '+91 ${_phoneController.text.trim()}',
+      name: unitName.isNotEmpty ? unitName : null,
+      teamName: unitName.isNotEmpty ? unitName : null,
+    );
     widget.onLoginSuccess();
   }
 
@@ -417,6 +425,34 @@ class _LoginScreenState extends State<LoginScreen> {
                               onChanged: (val) {
                                 if (val != null) setState(() => _selectedRole = val);
                               },
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+
+                        // Unit / Team Callsign Input (Live PostgreSQL registration)
+                        Container(
+                          height: 36,
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
+                          decoration: BoxDecoration(
+                            color: TacticalColors.surfaceContainerLowest,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: const Color(0xFF1E293B)),
+                          ),
+                          child: TextField(
+                            controller: _teamNameController,
+                            style: const TextStyle(
+                              color: TacticalColors.onSurface,
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                            decoration: const InputDecoration(
+                              border: InputBorder.none,
+                              isDense: true,
+                              contentPadding: EdgeInsets.symmetric(vertical: 9),
+                              icon: Icon(Icons.groups, color: TacticalColors.primary, size: 16),
+                              hintText: 'Unit / Team Name (e.g. Bravo 02)',
+                              hintStyle: TextStyle(color: TacticalColors.outline, fontSize: 12),
                             ),
                           ),
                         ),

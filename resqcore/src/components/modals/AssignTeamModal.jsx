@@ -1,14 +1,20 @@
 import React from 'react';
 import { X, Shield, AlertTriangle, CheckCircle, ChevronRight } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { SeverityBadge } from '../common/Badge';
+import { SeverityBadge, StatusBadge } from '../common/Badge';
 
 export const AssignTeamModal = () => {
   const { assignModalTeam, setAssignModalTeam, incidents, assignTeamToIncident } = useApp();
 
   if (!assignModalTeam) return null;
 
-  const eligibleIncidents = incidents.filter(i => !i.assignedTeam);
+  const eligibleIncidents = incidents
+    .filter(i => !i.assignedTeam && i.status !== 'Resolved')
+    .sort((a, b) => {
+      if (a.status === 'Verified' && b.status !== 'Verified') return -1;
+      if (b.status === 'Verified' && a.status !== 'Verified') return 1;
+      return 0;
+    });
 
   return (
     <div
@@ -110,11 +116,12 @@ export const AssignTeamModal = () => {
                 }}
               >
                 <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                     <span style={{ fontSize: '12px', fontWeight: 600, color: '#3B82F6' }}>
                       {incident.id}
                     </span>
                     <SeverityBadge severity={incident.severity} />
+                    <StatusBadge status={incident.status} />
                   </div>
                   <div style={{ fontSize: '14px', fontWeight: 600, color: '#FFFFFF', marginTop: '4px' }}>
                     {incident.title}
@@ -122,6 +129,26 @@ export const AssignTeamModal = () => {
                   <div style={{ fontSize: '12px', color: '#94A3B8', marginTop: '2px' }}>
                     {incident.shortLocation} · {incident.affected} people affected
                   </div>
+                  {Array.isArray(incident.requestedResources) && incident.requestedResources.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '6px' }}>
+                      {incident.requestedResources.map((r, idx) => (
+                        <span
+                          key={r.resourceId || idx}
+                          style={{
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            color: '#93C5FD',
+                            backgroundColor: '#13223D',
+                            border: '1px solid #1D4ED844',
+                            borderRadius: '6px',
+                            padding: '2px 7px'
+                          }}
+                        >
+                          {r.name || r.resourceId} ×{r.quantity}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div
