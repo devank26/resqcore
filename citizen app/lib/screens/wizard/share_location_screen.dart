@@ -454,10 +454,6 @@ class _ShareLocationScreenState extends State<ShareLocationScreen>
                         ),
                       ),
                     ),
-                          ],
-                        ),
-                      ),
-                    ),
                     const SizedBox(height: 12),
 
                     // GPS Status Metadata Bar
