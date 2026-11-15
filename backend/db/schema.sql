@@ -477,6 +477,7 @@ INSERT INTO resources(id, name, total, available) VALUES
   ('medical_kit', 'Medical Kits', 18, 18),
   ('ambulance',   'Ambulances',    6,  6),
   ('boat',        'Rescue Boats',  4,  4),
+  ('food_pack',   'Food Packets', 500, 500),
   ('drone',       'Drones',        3,  3),
   ('helicopter',  'Helicopters',   2,  2)
 ON CONFLICT (id) DO NOTHING;
@@ -503,6 +504,17 @@ ALTER TABLE shelters ADD COLUMN IF NOT EXISTS has_medical INTEGER DEFAULT 0;
 ALTER TABLE shelters ADD COLUMN IF NOT EXISTS has_airlift INTEGER DEFAULT 0;
 ALTER TABLE volunteers ADD COLUMN IF NOT EXISTS user_id TEXT;
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS requested_resources_json TEXT DEFAULT '[]';
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS other_needs_json TEXT DEFAULT '[]';
+
+CREATE TABLE IF NOT EXISTS os_event_log (
+  id           SERIAL PRIMARY KEY,
+  event_type   TEXT NOT NULL,
+  pid          TEXT,
+  detail       TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_os_event_log_id ON os_event_log(id DESC);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_source_ext
   ON alerts(source, external_id) WHERE source IS NOT NULL AND external_id IS NOT NULL;

@@ -11,7 +11,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test services/osEngine/osEngine.test.js",
+    "test": "node --test services/osEngine/*.test.js services/intelligence.test.js",
     "drill": "node live-platform-test.js"
   },
   "keywords": [

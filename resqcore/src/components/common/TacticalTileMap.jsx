@@ -333,20 +333,31 @@ export const TacticalTileMap = ({
         <svg
           width={containerSize.width}
           height={containerSize.height}
-          style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}
+          style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 3 }}
         >
           {displayIncidents.map((inc) => {
             const ll = extractLatLng(inc);
             if (!ll) return null;
             const pos = toScreen(ll.lat, ll.lng);
+            const isCritOrHigh = inc.severity === 'Critical' || inc.severity === 'High' || checkSOS(inc);
+            const affectedCount = Math.max(1, Number(inc.affected ?? inc.affectedCount ?? 1) || 1);
+            const outerR = Math.round(Math.min(72, 42 + Math.log10(affectedCount) * 14));
+            const innerR = Math.round(outerR * 0.46);
+            const outerFill = isCritOrHigh
+              ? 'rgba(239,68,68,0.18)'
+              : inc.severity === 'Medium'
+                ? 'rgba(245,158,11,0.16)'
+                : 'rgba(59,130,246,0.14)';
+            const coreFill = isCritOrHigh
+              ? 'rgba(239,68,68,0.38)'
+              : inc.severity === 'Medium'
+                ? 'rgba(245,158,11,0.30)'
+                : 'rgba(59,130,246,0.24)';
             return (
-              <circle
-                key={`heat-${inc.id}`}
-                cx={pos.left}
-                cy={pos.top}
-                r={48}
-                fill={inc.severity === 'High' || checkSOS(inc) ? 'rgba(239,68,68,0.28)' : 'rgba(245,158,11,0.22)'}
-              />
+              <g key={`heat-${inc.id}`}>
+                <circle cx={pos.left} cy={pos.top} r={outerR} fill={outerFill} />
+                <circle cx={pos.left} cy={pos.top} r={innerR} fill={coreFill} />
+              </g>
             );
           })}
         </svg>

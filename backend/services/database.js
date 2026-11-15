@@ -325,16 +325,20 @@ class DatabaseManager {
 
   async insertIncident(data) {
     const ts = nowIso();
+    const rawReq = data.requestedResources;
     const requestedResourcesJson = JSON.stringify(
-      Array.isArray(data.requestedResources) ? data.requestedResources : []
+      Array.isArray(rawReq) || (rawReq && typeof rawReq === 'object') ? rawReq : []
+    );
+    const otherNeedsJson = JSON.stringify(
+      Array.isArray(data.otherNeeds) ? data.otherNeeds : []
     );
     await this.query(
       `INSERT INTO incidents (
          id, title, type, location, short_location, area, affected, severity, status,
          response_summary, response_detail, description, field_report, contact_number,
          citizen_name, citizen_user_id, assigned_team, assigned_team_id, eta, substatus,
-         coordinates_json, lat, lng, sector_id, is_citizen_sos, is_rescue_sos, requested_resources_json, created_by, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, '{}', $21, $22, $23, $24, $25, $26, $27, $28, $29)`,
+         coordinates_json, lat, lng, sector_id, is_citizen_sos, is_rescue_sos, requested_resources_json, other_needs_json, created_by, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, '{}', $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)`,
       [
         data.id, data.title, data.type ?? null, data.location ?? '', data.shortLocation ?? '', data.area ?? '',
         data.affected ?? 1, data.severity, data.status,
@@ -342,7 +346,7 @@ class DatabaseManager {
         data.contactNumber ?? '', data.citizenName ?? '', data.citizenUserId ?? null,
         data.assignedTeam ?? null, data.assignedTeamId ?? null, data.eta ?? null, data.substatus ?? '',
         data.lat ?? null, data.lng ?? null, data.sectorId ?? null,
-        bool(data.isCitizenSOS), bool(data.isRescueSOS), requestedResourcesJson, data.createdBy ?? null, ts, ts
+        bool(data.isCitizenSOS), bool(data.isRescueSOS), requestedResourcesJson, otherNeedsJson, data.createdBy ?? null, ts, ts
       ]
     );
     return this.getIncidentById(data.id);
@@ -456,6 +460,25 @@ class DatabaseManager {
     });
   }
 
+  async releaseIncidentAllocations(incidentId) {
+    const res = await this.query('SELECT release_incident_resources($1) AS released', [incidentId]);
+    return Number(res.rows[0]?.released || 0);
+  }
+
+  async releaseOldTeamAssignment(incidentId, oldTeamId) {
+    if (!incidentId || !oldTeamId) return null;
+    await this.query(
+      `UPDATE assignments SET status = 'Completed'
+       WHERE incident_id = $1 AND team_id = $2 AND status IN ('Assigned', 'On site')`,
+      [incidentId, oldTeamId]
+    );
+    const remaining = await this.countActiveIncidentsForTeam(oldTeamId);
+    if (remaining === 0) {
+      return this.updateTeam(oldTeamId, { status: 'Available', task: null, eta: null });
+    }
+    return this.getTeamById(oldTeamId);
+  }
+
   async getResourcesSnapshot() {
     const resRows = await this.query('SELECT id, name, total, available FROM resources ORDER BY id');
     const allocRows = await this.query(
@@ -510,6 +533,17 @@ class DatabaseManager {
       requestedResources: (() => {
         try {
           const parsed = JSON.parse(r.requested_resources_json || '[]');
+          if (Array.isArray(parsed) || (parsed && typeof parsed === 'object')) {
+            return parsed;
+          }
+          return [];
+        } catch {
+          return [];
+        }
+      })(),
+      otherNeeds: (() => {
+        try {
+          const parsed = JSON.parse(r.other_needs_json || '[]');
           return Array.isArray(parsed) ? parsed : [];
         } catch {
           return [];
@@ -769,6 +803,109 @@ class DatabaseManager {
       volunteers: await count('SELECT COUNT(*) AS c FROM volunteers'),
       activeSos: await count('SELECT COUNT(*) AS c FROM sos_events WHERE resolved = 0'),
       telemetryRecords: await count('SELECT COUNT(*) AS c FROM telemetry')
+    };
+  }
+
+  // =================== OS ENGINE PERSISTENCE ===================
+  async appendOsEvent({ type, pid = null, detail = '', payload = {} } = {}) {
+    await this.query(
+      `INSERT INTO os_event_log (event_type, pid, detail, payload_json, created_at)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [String(type || 'EVENT'), pid ? String(pid) : null, String(detail || ''), JSON.stringify(payload || {}), nowIso()]
+    );
+  }
+
+  async getRecentOsEvents(limit = 40) {
+    const safeLimit = Math.max(1, Math.min(200, Number(limit) || 40));
+    const res = await this.query(
+      'SELECT id, event_type, pid, detail, payload_json, created_at FROM os_event_log ORDER BY id DESC LIMIT $1',
+      [safeLimit]
+    );
+    return res.rows.map((r) => {
+      let payload = {};
+      try { payload = JSON.parse(r.payload_json || '{}'); } catch { payload = {}; }
+      return {
+        id: r.id,
+        type: r.event_type,
+        pid: r.pid,
+        detail: r.detail,
+        payload,
+        at: Date.parse(r.created_at) || Date.now(),
+        createdAt: r.created_at
+      };
+    });
+  }
+
+  async setResourceTotalsInDb(updates = {}) {
+    const KEY_TO_DB = {
+      ambulances: { id: 'ambulance', name: 'Ambulances' },
+      boats: { id: 'boat', name: 'Rescue Boats' },
+      medicalKits: { id: 'medical_kit', name: 'Medical Kits' },
+      foodPacks: { id: 'food_pack', name: 'Food Packets' }
+    };
+    return this.tx(async (client) => {
+      for (const [key, val] of Object.entries(updates || {})) {
+        const meta = KEY_TO_DB[key];
+        if (!meta) continue;
+        const n = Number(val);
+        if (!Number.isInteger(n) || n < 0) {
+          const err = new Error(`Invalid resource total for ${key}: must be a non-negative integer`);
+          err.statusCode = 400;
+          throw err;
+        }
+        const cur = await client.query('SELECT id, total, available FROM resources WHERE id = $1 FOR UPDATE', [meta.id]);
+        if (cur.rows.length === 0) {
+          await client.query(
+            'INSERT INTO resources (id, name, total, available) VALUES ($1, $2, $3, $3)',
+            [meta.id, meta.name, n]
+          );
+        } else {
+          const oldTotal = Number(cur.rows[0].total || 0);
+          const oldAvail = Number(cur.rows[0].available || 0);
+          const inUse = Math.max(0, oldTotal - oldAvail);
+          if (n < inUse) {
+            const err = new Error(`Cannot set ${key} total to ${n}: ${inUse} currently allocated`);
+            err.statusCode = 409;
+            throw err;
+          }
+          const newAvail = n - inUse;
+          await client.query('UPDATE resources SET total = $1, available = $2 WHERE id = $3', [n, newAvail, meta.id]);
+        }
+      }
+      const resRows = await client.query('SELECT id, name, total, available FROM resources ORDER BY id');
+      return resRows.rows;
+    });
+  }
+
+  async getOperationalIntelligenceData() {
+    const [
+      incidents,
+      teams,
+      shelters,
+      resSnap,
+      sectors,
+      assignRes,
+      telemetry,
+      telemCountRes
+    ] = await Promise.all([
+      this.getAllIncidents(),
+      this.getAllTeams(),
+      this.getShelters(),
+      this.getResourcesSnapshot(),
+      this.getSectors(),
+      this.query('SELECT incident_id, team_id, status, eta, assigned_at, completed_at FROM assignments ORDER BY id ASC'),
+      this.getLatestTelemetry(),
+      this.query('SELECT COUNT(*) AS c FROM telemetry')
+    ]);
+    return {
+      incidents,
+      teams,
+      shelters,
+      resources: resSnap.resources || [],
+      sectors,
+      assignments: assignRes.rows || [],
+      telemetry,
+      telemetryCount: Number(telemCountRes.rows[0]?.c || 0)
     };
   }
 }

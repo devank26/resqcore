@@ -11,7 +11,12 @@ import { SimpleWebSocketServer } from './services/websocketServer.js';
 import { extractToken, verifyEnvBearerToken } from './services/auth.js';
 import { HttpError, badRequest, forbidden, notFound, unauthorized } from './services/errors.js';
 import * as actions from './services/actions.js';
-import { osEngine } from './services/osEngine/index.js';
+import {
+  getOsLiveSnapshot,
+  initLiveOsFromDb,
+  startLiveAgingTimer,
+  stopLiveAgingTimer
+} from './services/osEngine/runtime.js';
 import { startFeeds, stopFeeds } from './services/feeds.js';
 
 const VERSION = '3.0.0';
@@ -171,8 +176,29 @@ route('GET', '/api/stream', ANY, async ({ req, res, user }) => {
   return HANDLED;
 });
 
-// ---- OS engine state
-route('GET', '/api/os/state', null, async () => ({ success: true, state: osEngine.getState() }));
+// ---- OS engine state & algorithms (Section 9)
+route('GET', '/api/os/state', null, async () => ({ success: true, state: getOsLiveSnapshot() }));
+route('GET', '/api/os-live', null, async () => actions.getOsLive());
+route('POST', '/api/os-live/resources', COMMAND, async ({ body }) =>
+  await actions.updateOsResourceTotals(body)
+);
+route('GET', '/api/os-algo/schedulers', null, async ({ query }) =>
+  await actions.getSchedulerComparison({
+    source: query.get('source') || 'live',
+    quantum: query.get('quantum')
+  })
+);
+route('POST', '/api/os-algo/schedulers', null, async ({ body }) =>
+  actions.runCustomSchedulerComparison(body)
+);
+route('GET', '/api/os-algo/deadlock', null, async () => actions.getDeadlockAnalysis());
+route('GET', '/api/os-algo/semaphore-demo', null, async ({ query }) =>
+  actions.getSemaphoreDemo({
+    capacity: query.get('capacity'),
+    items: query.get('items'),
+    consumeEvery: query.get('consumeEvery')
+  })
+);
 
 // ---- citizen
 route('POST', '/api/citizen/sos', ['citizen', 'command'], async ({ user, body }) => {
@@ -197,6 +223,9 @@ route('GET', '/api/incidents', null, async ({ query }) => {
   const list = await actions.listIncidents({ status: query.get('status') });
   return { success: true, count: list.length, incidents: list };
 });
+route('GET', '/api/incidents/:id/suggest-team', null, async ({ params }) =>
+  await actions.suggestTeamsForIncident(params.id)
+);
 route('GET', '/api/incidents/:id', null, async ({ params }) => ({
   success: true,
   incident: await actions.getIncidentById(params.id)
@@ -319,10 +348,14 @@ route('PUT', '/api/volunteers/:id', ANY, async ({ user, params, body }) => ({
   volunteer: await actions.setVolunteerStatus(user, params.id, body)
 }));
 
-// ---- diagnostics
+// ---- diagnostics & operational intelligence
 route('GET', '/api/database/stats', null, async () => ({
   success: true,
   database: await db.getStats()
+}));
+route('GET', '/api/reports/intelligence', null, async () => ({
+  success: true,
+  intelligence: await actions.getOperationalIntelligence()
 }));
 
 // ------------------------------------------------------------------ static hosting (../resqcore/dist)
@@ -509,7 +542,8 @@ wsServer.onMessage(async (msg, client) => {
 // ------------------------------------------------------------------ lifecycle
 
 await db.init();
-osEngine.startAgingTimer((state) => eventBus.emitRealtime('os_state', state));
+await initLiveOsFromDb();
+startLiveAgingTimer(30_000);
 startFeeds();
 
 server.listen(PORT, '0.0.0.0', () => {
@@ -526,7 +560,7 @@ async function shutdown(signal) {
   shuttingDown = true;
   console.log(`[Lifecycle] ${signal} received, shutting down...`);
   stopFeeds();
-  osEngine.stopAgingTimer();
+  stopLiveAgingTimer();
   const force = setTimeout(() => process.exit(1), 5000);
   force.unref();
   server.close(async () => {

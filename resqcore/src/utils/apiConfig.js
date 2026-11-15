@@ -7,6 +7,17 @@ export function apiUrl(path) {
   return `${API_BASE_URL}${normalized}`;
 }
 
+export function wsUrl(path) {
+  const normalized = path.startsWith('/') ? path : `/${path}`;
+  if (API_BASE_URL) {
+    const wsBase = API_BASE_URL.replace(/^https:/i, 'wss:').replace(/^http:/i, 'ws:');
+    return `${wsBase}${normalized}`;
+  }
+  const proto = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const host = typeof window !== 'undefined' ? window.location.host : 'localhost:5000';
+  return `${proto}//${host}${normalized}`;
+}
+
 export const GOOGLE_MAPS_API_KEY = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '').trim();
 
 const GOOGLE_MAPS_OVERRIDE_STORAGE_KEY = 'RESQCORE_GOOGLE_MAPS_API_KEY_OVERRIDE';

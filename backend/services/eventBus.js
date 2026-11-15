@@ -102,7 +102,7 @@ class ResQCoreEventBus extends EventEmitter {
       for (const client of this.wsServer.clients) {
         const view = projectForViewer(client.viewer, eventType, data);
         if (view === null) continue;
-        this.wsServer.sendToClient(client, { event: eventType, data: view, timestamp: new Date().toISOString() });
+        this.wsServer.sendToClient(client, { type: eventType, event: eventType, data: view, timestamp: new Date().toISOString() });
         ws++;
       }
     }

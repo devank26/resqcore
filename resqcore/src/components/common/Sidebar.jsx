@@ -8,7 +8,8 @@ import {
   Radio,
   Settings,
   ShieldAlert,
-  Activity
+  Cpu,
+  Layers
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { formatOperationalShortDate, useCurrentDate } from '../../utils/dateUtils';
@@ -24,7 +25,8 @@ export const Sidebar = () => {
     { id: 'incidents', label: 'Incidents', icon: AlertTriangle, badge: incidents.length.toString() },
     { id: 'teams', label: 'Teams', icon: Users },
     { id: 'reports', label: 'Reports', icon: BarChart3 },
-    { id: 'os-engine', label: 'OS Engine', icon: Activity },
+    { id: 'os-engine', label: 'OS Monitor', icon: Cpu },
+    { id: 'scheduler-lab', label: 'Scheduler Lab', icon: Layers },
     { id: 'communication', label: 'Communication', icon: Radio },
     { id: 'settings', label: 'Settings', icon: Settings }
   ];
