@@ -262,6 +262,7 @@ export const initialTeams = [
     staging: "Vypin",
     task: "INC-2046 · Coastal evacuation",
     eta: "ETA 8 min",
+    coordinates: { lat: 9.9820, lng: 76.2410 },
     online: true,
     lastUpdate: "Updated 1m ago"
   },
@@ -275,6 +276,7 @@ export const initialTeams = [
     staging: "Fort Kochi staging area",
     readiness: "Ready for deployment",
     equipment: "Boat equipped · Radio connected",
+    coordinates: { lat: 9.9650, lng: 76.2390 },
     online: true,
     lastUpdate: "Updated 1m ago"
   },
@@ -288,6 +290,7 @@ export const initialTeams = [
     staging: "Ernakulam relief hub",
     readiness: "Ready for deployment",
     equipment: "Medical kits stocked",
+    coordinates: { lat: 9.9700, lng: 76.2500 },
     online: true,
     lastUpdate: "Updated 1m ago"
   },
@@ -301,6 +304,7 @@ export const initialTeams = [
     staging: "Edappally",
     task: "INC-2045 · Residential fire",
     eta: "ETA 16 min",
+    coordinates: { lat: 9.9600, lng: 76.2600 },
     online: true,
     lastUpdate: "Updated 1m ago"
   },
@@ -314,6 +318,7 @@ export const initialTeams = [
     staging: "Thevara",
     task: "INC-2044 · Road inundation",
     note: "120 people · Evacuation underway",
+    coordinates: { lat: 9.9350, lng: 76.2980 },
     online: true,
     lastUpdate: "Updated 1m ago"
   },
@@ -327,6 +332,7 @@ export const initialTeams = [
     staging: "Kakkanad",
     task: "INC-2043 · Shelter check-in",
     note: "160 people · Monitoring",
+    coordinates: { lat: 10.0150, lng: 76.3400 },
     online: true,
     lastUpdate: "Updated 1m ago"
   }

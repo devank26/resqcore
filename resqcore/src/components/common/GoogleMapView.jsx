@@ -6,7 +6,8 @@ import {
   getDistrictCenter,
   parseCoord,
   createTacticalMarkerIcon,
-  createTeamMarkerIcon
+  createTeamMarkerIcon,
+  createMissionBadgeIcon
 } from '../../utils/googleMapsConfig';
 import {
   Plus,
@@ -19,7 +20,11 @@ import {
   CheckCircle2,
   Key,
   X,
-  ExternalLink
+  ExternalLink,
+  Shield,
+  Radio,
+  Navigation,
+  Maximize2
 } from 'lucide-react';
 
 export const GoogleMapView = ({
@@ -31,12 +36,17 @@ export const GoogleMapView = ({
   onSelectIncident,
   showHeatmap = false,
   showFullControls = true,
-  onOpenKeyModal
+  showTeams = true,
+  filterMode = 'all', // 'all' | 'sos' | 'missions'
+  onOpenKeyModal,
+  onVerifyIncident,
+  onDispatchTeam
 }) => {
   const mapContainerRef = useRef(null);
   const mapInstanceRef = useRef(null);
   const trafficLayerRef = useRef(null);
   const markersRef = useRef([]);
+  const missionsRef = useRef([]);
   const infoWindowRef = useRef(null);
 
   const [mapLoaded, setMapLoaded] = useState(false);
@@ -45,6 +55,7 @@ export const GoogleMapView = ({
   const [showTraffic, setShowTraffic] = useState(false);
   const [showLiveQuakes, setShowLiveQuakes] = useState(false);
   const [liveQuakesCount, setLiveQuakesCount] = useState(0);
+  const [activeHudFilter, setActiveHudFilter] = useState('all'); // 'all' | 'sos' | 'missions'
 
   // Initialize Google Maps
   useEffect(() => {
@@ -129,48 +140,153 @@ export const GoogleMapView = ({
     }
   }, [showTraffic]);
 
-  // Update Markers when incidents or selectedIncidentId change
+  // Expose global action handlers for InfoWindow action buttons
+  useEffect(() => {
+    window.__dispatchAlpha = (incidentId) => {
+      if (onDispatchTeam) {
+        onDispatchTeam(incidentId);
+      } else {
+        const team = teams.find(t => t.id === 'alpha-01') || teams.find(t => t.status === 'Standby') || teams[0];
+        if (team && onSelectIncident) onSelectIncident(incidentId);
+      }
+    };
+
+    window.__verifyIncident = (incidentId) => {
+      if (onVerifyIncident) {
+        onVerifyIncident(incidentId);
+      }
+    };
+
+    return () => {
+      delete window.__dispatchAlpha;
+      delete window.__verifyIncident;
+    };
+  }, [teams, onDispatchTeam, onVerifyIncident, onSelectIncident]);
+
+  // Update Markers, Missions and Real-time Telemetry when incidents or selectedIncidentId change
   useEffect(() => {
     if (!mapInstanceRef.current || !window.google || !mapLoaded) return;
 
-    // Clear previous markers
+    // Clear previous markers and mission vectors
     markersRef.current.forEach(m => m.setMap(null));
     markersRef.current = [];
+    missionsRef.current.forEach(item => item.setMap(null));
+    missionsRef.current = [];
 
-    // Add Incident Markers
-    incidents.forEach((incident) => {
-      if (!incident.coordinates) return;
-      const lat = parseCoord(incident.coordinates.lat);
-      const lng = parseCoord(incident.coordinates.lng);
+    const bounds = new window.google.maps.LatLngBounds();
+    let hasValidBounds = false;
+
+    // Helper functions for classification
+    const checkCitizenSOS = (inc) => Boolean(
+      inc.isCitizenSOS ||
+      inc.is_citizen_sos ||
+      (typeof inc.id === 'string' && (inc.id.startsWith('RQ-') || inc.id.startsWith('SOS-') || inc.id.startsWith('CITIZEN-'))) ||
+      inc.type?.toUpperCase().includes('SOS') ||
+      inc.title?.toUpperCase().includes('SOS') ||
+      inc.description?.toUpperCase().includes('SOS') ||
+      inc.severity === 'Critical'
+    );
+
+    const checkRescueSOS = (inc) => Boolean(
+      inc.isRescueSOS ||
+      inc.is_rescue_sos ||
+      inc.type === 'Field SOS' ||
+      (typeof inc.id === 'string' && inc.id.startsWith('SOS-FIELD-')) ||
+      inc.title?.toUpperCase().includes('RESCUE SOS') ||
+      inc.title?.toUpperCase().includes('FIELD SOS')
+    );
+
+    const checkOngoingMission = (inc) => Boolean(
+      inc.status === 'Responding' ||
+      inc.status === 'On site' ||
+      inc.assignedTeam ||
+      inc.teamAssigned
+    );
+
+    // Filter incidents based on active map HUD filter
+    const displayIncidents = incidents.filter(inc => {
+      const isCitizenSOS = checkCitizenSOS(inc);
+      const isRescueSOS = checkRescueSOS(inc);
+      const isSOS = isCitizenSOS || isRescueSOS;
+      const isMission = checkOngoingMission(inc);
+
+      if (activeHudFilter === 'sos') return isSOS;
+      if (activeHudFilter === 'missions') return isMission;
+      return true;
+    });
+
+    // 1. Add Incident Markers with dedicated SOS rendering & high z-index
+    displayIncidents.forEach((incident) => {
+      const coords = incident.coordinates || {};
+      const rawLat = coords.latitude ?? coords.lat ?? incident.latitude ?? incident.lat;
+      const rawLng = coords.longitude ?? coords.lng ?? incident.longitude ?? incident.lng;
+      const lat = parseCoord(rawLat);
+      const lng = parseCoord(rawLng);
       if (!lat || !lng) return;
 
       const isSelected = selectedIncidentId === incident.id;
-      const isVerified = incident.status === 'Verified';
+      const isVerified = incident.status === 'Verified' || incident.status === 'Responding' || incident.status === 'On site';
+      const isCitizenSOS = checkCitizenSOS(incident);
+      const isRescueSOS = checkRescueSOS(incident);
+      const isSOS = isCitizenSOS || isRescueSOS;
+      const isMission = checkOngoingMission(incident);
+
+      bounds.extend({ lat, lng });
+      hasValidBounds = true;
+
+      const markerSize = isSOS ? (isSelected ? 48 : 40) : (isSelected ? 38 : 30);
+      const markerAnchor = markerSize / 2;
+      const markerZIndex = isSelected ? 1000 : (isSOS ? 900 : (incident.severity === 'High' ? 100 : 50));
 
       const marker = new window.google.maps.Marker({
         position: { lat, lng },
         map: mapInstanceRef.current,
         title: `${incident.id}: ${incident.title}`,
         icon: {
-          url: createTacticalMarkerIcon(incident.severity, isVerified, isSelected),
-          scaledSize: new window.google.maps.Size(isSelected ? 36 : 28, isSelected ? 36 : 28),
-          anchor: new window.google.maps.Point(isSelected ? 18 : 14, isSelected ? 18 : 14)
+          url: createTacticalMarkerIcon(incident.severity, isVerified, isSelected, isCitizenSOS, isRescueSOS),
+          scaledSize: new window.google.maps.Size(markerSize, markerSize),
+          anchor: new window.google.maps.Point(markerAnchor, markerAnchor)
         },
-        zIndex: isSelected ? 99 : 10
+        zIndex: markerZIndex
       });
 
       marker.addListener('click', () => {
         if (onSelectIncident) onSelectIncident(incident.id);
 
+        const badgeColor = isSOS ? '#EF4444' : (isVerified ? '#10B981' : incident.severity === 'High' ? '#EF4444' : '#F59E0B');
+        const badgeLabel = isRescueSOS ? '🚨 RESCUE UNIT SOS' : (isCitizenSOS ? '🚨 CITIZEN DISTRESS SOS' : (incident.severity || 'Tactical Incident'));
+        const statusColor = isVerified ? '#10B981' : '#F59E0B';
+
         const content = `
-          <div style="background-color: #0F172A; color: #FFFFFF; padding: 10px 14px; border-radius: 8px; font-family: sans-serif; min-width: 220px; border: 1px solid #1E293B;">
-            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
-              <span style="font-weight: 700; font-size: 13px; color: ${isVerified ? '#10B981' : incident.severity === 'High' ? '#EF4444' : '#F59E0B'}">${incident.id}</span>
-              <span style="font-size: 11px; background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; color: #94A3B8;">${incident.severity}</span>
+          <div style="background-color: #0F172A; color: #FFFFFF; padding: 14px 16px; border-radius: 10px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; min-width: 260px; max-width: 320px; border: 1.5px solid ${isSOS ? '#EF4444' : isMission ? '#10B981' : '#1E293B'}; box-shadow: 0 12px 28px rgba(0,0,0,0.6);">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px;">
+              <span style="font-weight: 800; font-size: 13px; color: ${badgeColor}; letter-spacing: 0.5px;">${incident.id}</span>
+              <span style="font-size: 10px; font-weight: 800; background: ${isSOS ? 'rgba(239,68,68,0.2)' : 'rgba(255,255,255,0.1)'}; color: ${badgeColor}; padding: 2px 7px; border-radius: 4px; text-transform: uppercase;">${badgeLabel}</span>
             </div>
-            <div style="font-size: 13px; font-weight: 600; margin-top: 4px; color: #F8FAFC;">${incident.title}</div>
-            <div style="font-size: 11px; color: #94A3B8; margin-top: 2px;">${incident.location || incident.shortLocation}</div>
-            <div style="font-size: 11px; color: #38BDF8; margin-top: 4px;">👥 ${incident.affected || 0} affected · Status: ${incident.status}</div>
+            
+            <div style="font-size: 13px; font-weight: 700; color: #F8FAFC; line-height: 1.35; margin-bottom: 4px;">${incident.title}</div>
+            <div style="font-size: 11px; color: #94A3B8; margin-bottom: 6px;">📍 ${incident.location || incident.fullAddress || incident.shortLocation || 'Operational Theater'}</div>
+
+            ${incident.citizenName ? `<div style="font-size: 11px; color: #E2E8F0; margin-top: 2px;">👤 <strong>Reported by:</strong> ${incident.citizenName}</div>` : ''}
+            ${incident.contactNumber ? `<div style="font-size: 11px; color: #38BDF8; margin-top: 2px;">📞 <a href="tel:${incident.contactNumber}" style="color: #38BDF8; text-decoration: underline; font-weight: 600;">${incident.contactNumber}</a></div>` : ''}
+            ${incident.fieldReport ? `<div style="font-size: 11px; color: #CBD5E1; margin-top: 6px; background: rgba(15,23,42,0.9); padding: 5px 8px; border-radius: 4px; border-left: 2.5px solid ${badgeColor};">${incident.fieldReport}</div>` : ''}
+
+            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: #94A3B8; margin-top: 8px; padding-top: 6px; border-top: 1px solid #1E293B;">
+              <span>👥 <strong>${incident.affected || incident.affectedCount || 1}</strong> Affected</span>
+              <span style="color: ${statusColor}; font-weight: 700;">Status: ${incident.status || 'Unverified'}</span>
+            </div>
+
+            ${incident.assignedTeam ? `<div style="font-size: 11px; color: #10B981; margin-top: 6px; font-weight: 700; background: rgba(16,185,129,0.1); padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(16,185,129,0.3);">🛡️ Dispatched: ${incident.assignedTeam} ${incident.eta ? `· ${incident.eta}` : ''}</div>` : ''}
+
+            <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 5px;">
+              <button onclick="window.__dispatchAlpha && window.__dispatchAlpha('${incident.id}')" style="background: linear-gradient(135deg, #DC2626, #B91C1C); color: #FFFFFF; border: none; padding: 7px 12px; border-radius: 6px; font-weight: 700; font-size: 11px; cursor: pointer; text-align: center; letter-spacing: 0.5px; box-shadow: 0 2px 6px rgba(220,38,38,0.4);">
+                🚨 DISPATCH SEARCH & RESCUE
+              </button>
+              ${incident.status !== 'Verified' && incident.status !== 'Responding' ? `
+              <button onclick="window.__verifyIncident && window.__verifyIncident('${incident.id}')" style="background: #1E293B; color: #38BDF8; border: 1px solid #38BDF8; padding: 5px 12px; border-radius: 6px; font-weight: 600; font-size: 11px; cursor: pointer; text-align: center;">
+                ✓ VERIFY EMERGENCY
+              </button>` : ''}
+            </div>
           </div>
         `;
 
@@ -181,51 +297,181 @@ export const GoogleMapView = ({
       markersRef.current.push(marker);
     });
 
-    // Add Deployed Rescue Teams
-    teams.forEach((team) => {
-      if (team.status !== 'Deployed') return;
-      // approximate deployment coordinates
-      let pos = { lat: 9.9920, lng: 76.2300 }; // default Vypin
-      if (team.id === 'bravo-02') pos = { lat: 9.9658, lng: 76.2421 }; // Fort Kochi
-      if (team.id === 'echo-05') pos = { lat: 9.9350, lng: 76.2980 }; // Thevara
+    // 2. Add All Rescue Teams with real GPS coordinates from live telemetry
+    if (showTeams) {
+      teams.forEach((team) => {
+        const coords = team.coordinates || {};
+        const rawTeamLat = coords.latitude ?? coords.lat;
+        const rawTeamLng = coords.longitude ?? coords.lng;
+        const teamLat = parseCoord(rawTeamLat, 30.5593);
+        const teamLng = parseCoord(rawTeamLng, 79.5644);
+        if (!teamLat || !teamLng) return;
 
-      const teamMarker = new window.google.maps.Marker({
-        position: pos,
-        map: mapInstanceRef.current,
-        title: `${team.name} (${team.specialization || 'Response'})`,
-        icon: {
-          url: createTeamMarkerIcon(),
-          scaledSize: new window.google.maps.Size(26, 26),
-          anchor: new window.google.maps.Point(13, 13)
-        },
-        zIndex: 5
+        const pos = { lat: teamLat, lng: teamLng };
+        bounds.extend(pos);
+        hasValidBounds = true;
+
+        const batteryPct = team.battery !== undefined ? team.battery : '?';
+        const batteryColor = batteryPct > 50 ? '#10B981' : batteryPct > 20 ? '#F59E0B' : '#EF4444';
+        const isDeployed = team.status === 'Deployed' || team.status === 'On site';
+
+        const teamMarker = new window.google.maps.Marker({
+          position: pos,
+          map: mapInstanceRef.current,
+          title: `${team.name} · ${team.status || 'Active'} · Battery: ${batteryPct}%`,
+          icon: {
+            url: createTeamMarkerIcon(),
+            scaledSize: new window.google.maps.Size(32, 32),
+            anchor: new window.google.maps.Point(16, 16)
+          },
+          zIndex: isDeployed ? 80 : 40
+        });
+
+        teamMarker.addListener('click', () => {
+          const content = `
+            <div style="background-color: #0F172A; color: #FFFFFF; padding: 12px 14px; border-radius: 8px; font-family: sans-serif; min-width: 230px; border: 1px solid #10B981; box-shadow: 0 8px 24px rgba(0,0,0,0.5);">
+              <div style="font-weight: 800; font-size: 13.5px; color: #10B981; display: flex; align-items: center; justify-content: space-between;">
+                <span>🛡️ ${team.name}</span>
+                <span style="font-size: 10px; background: rgba(16,185,129,0.2); color: #10B981; padding: 2px 6px; border-radius: 4px;">${team.status || 'Ready'}</span>
+              </div>
+              <div style="font-size: 11px; color: #94A3B8; margin-top: 3px;">${team.type || team.specialization || 'SAR Quick Response'} · ${team.callsign || ''}</div>
+              ${team.task ? `<div style="font-size: 11px; color: #38BDF8; margin-top: 5px; font-weight: 600; background: rgba(56,189,248,0.1); padding: 4px 6px; border-radius: 4px;">🎯 Mission: ${team.task}</div>` : ''}
+              <div style="font-size: 11px; color: ${batteryColor}; margin-top: 4px;">🔋 Battery: ${batteryPct}% · Signal: ${team.signal || 'Strong (4G/Radio)'}</div>
+              <div style="font-size: 10.5px; color: #64748B; margin-top: 4px;">📍 GPS: ${teamLat.toFixed(4)}°N, ${teamLng.toFixed(4)}°E</div>
+              ${team.commanderPhone ? `<div style="font-size: 10.5px; color: #E2E8F0; margin-top: 3px;">📞 Lead: <a href="tel:${team.commanderPhone}" style="color: #38BDF8;">${team.commanderPhone}</a></div>` : ''}
+            </div>
+          `;
+          infoWindowRef.current.setContent(content);
+          infoWindowRef.current.open(mapInstanceRef.current, teamMarker);
+        });
+
+        markersRef.current.push(teamMarker);
       });
 
-      teamMarker.addListener('click', () => {
-        const content = `
-          <div style="background-color: #0F172A; color: #FFFFFF; padding: 10px 14px; border-radius: 8px; font-family: sans-serif; min-width: 200px; border: 1px solid #10B981;">
-            <div style="font-weight: 700; font-size: 13px; color: #10B981;">🛡️ ${team.name}</div>
-            <div style="font-size: 11px; color: #94A3B8; margin-top: 2px;">${team.specialization}</div>
-            <div style="font-size: 11px; color: #E2E8F0; margin-top: 4px;">Status: ${team.status} · ${team.responders || 6} responders</div>
-          </div>
-        `;
-        infoWindowRef.current.setContent(content);
-        infoWindowRef.current.open(mapInstanceRef.current, teamMarker);
+      // 3. Render Ongoing Mission Vectors (Polylines + Directional Arrows + Midpoint Badges)
+      displayIncidents.forEach((incident) => {
+        if (!checkOngoingMission(incident)) return;
+
+        const coords = incident.coordinates || {};
+        const rawLat = coords.latitude ?? coords.lat ?? incident.latitude ?? incident.lat;
+        const rawLng = coords.longitude ?? coords.lng ?? incident.longitude ?? incident.lng;
+        const incLat = parseCoord(rawLat);
+        const incLng = parseCoord(rawLng);
+        if (!incLat || !incLng) return;
+
+        // Match assigned team
+        const assignedName = incident.assignedTeam || incident.teamAssigned;
+        let matchedTeam = teams.find(t =>
+          t.id === assignedName ||
+          t.name?.toLowerCase() === assignedName?.toLowerCase() ||
+          (assignedName && assignedName.toLowerCase().includes(t.name?.toLowerCase())) ||
+          (t.task && t.task.includes(incident.id))
+        );
+
+        // Fallback: match first deployed team if available
+        if (!matchedTeam && teams.length > 0) {
+          matchedTeam = teams.find(t => t.status === 'Deployed' || t.status === 'On site') || teams[0];
+        }
+
+        if (!matchedTeam) return;
+
+        const teamCoords = matchedTeam.coordinates || {};
+        const teamLat = parseCoord(teamCoords.latitude ?? teamCoords.lat, 30.5593);
+        const teamLng = parseCoord(teamCoords.longitude ?? teamCoords.lng, 79.5644);
+        if (!teamLat || !teamLng) return;
+
+        const isSelected = selectedIncidentId === incident.id;
+        const strokeColor = isSelected ? '#38BDF8' : '#10B981';
+
+        // Draw Tactical Mission Polyline
+        const missionLine = new window.google.maps.Polyline({
+          path: [
+            { lat: teamLat, lng: teamLng },
+            { lat: incLat, lng: incLng }
+          ],
+          geodesic: true,
+          strokeColor: strokeColor,
+          strokeOpacity: isSelected ? 0.95 : 0.75,
+          strokeWeight: isSelected ? 4 : 3,
+          icons: [
+            {
+              icon: {
+                path: window.google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+                scale: 2.5,
+                fillColor: strokeColor,
+                fillOpacity: 0.9,
+                strokeColor: '#091122',
+                strokeWeight: 1
+              },
+              offset: '50%',
+              repeat: '90px'
+            }
+          ],
+          map: mapInstanceRef.current,
+          zIndex: isSelected ? 70 : 30
+        });
+
+        // Click handler for mission vector
+        missionLine.addListener('click', () => {
+          if (onSelectIncident) onSelectIncident(incident.id);
+          const midLat = (teamLat + incLat) / 2;
+          const midLng = (teamLng + incLng) / 2;
+          const content = `
+            <div style="background-color: #091224; color: #FFFFFF; padding: 12px 14px; border-radius: 8px; font-family: sans-serif; min-width: 240px; border: 1.5px solid #10B981; box-shadow: 0 8px 24px rgba(0,0,0,0.6);">
+              <div style="font-weight: 800; font-size: 13px; color: #10B981;">🛡️ ONGOING MISSION VECTOR</div>
+              <div style="font-size: 12px; color: #F8FAFC; margin-top: 4px; font-weight: 600;">${matchedTeam.name} ➔ ${incident.id}</div>
+              <div style="font-size: 11px; color: #94A3B8; margin-top: 2px;">Target: ${incident.title}</div>
+              <div style="font-size: 11px; color: #38BDF8; margin-top: 4px; font-weight: 700;">⏱️ Response: ${incident.eta || matchedTeam.eta || 'ETA 8-12 min'}</div>
+              <div style="font-size: 10px; color: #64748B; margin-top: 4px;">Status: ${incident.status} · Team deployed</div>
+            </div>
+          `;
+          infoWindowRef.current.setContent(content);
+          infoWindowRef.current.setPosition({ lat: midLat, lng: midLng });
+          infoWindowRef.current.open(mapInstanceRef.current);
+        });
+
+        missionsRef.current.push(missionLine);
+
+        // Mission Midpoint Badge
+        const midLat = (teamLat + incLat) / 2;
+        const midLng = (teamLng + incLng) / 2;
+        const badgeLabel = `${matchedTeam.name} ➔ ${incident.id} (${incident.eta || 'En Route'})`;
+
+        const badgeMarker = new window.google.maps.Marker({
+          position: { lat: midLat, lng: midLng },
+          map: mapInstanceRef.current,
+          icon: {
+            url: createMissionBadgeIcon(badgeLabel, isSelected),
+            scaledSize: new window.google.maps.Size(Math.max(badgeLabel.length * 7 + 34, 110), 24),
+            anchor: new window.google.maps.Point(Math.max(badgeLabel.length * 7 + 34, 110) / 2, 12)
+          },
+          zIndex: isSelected ? 75 : 35
+        });
+
+        badgeMarker.addListener('click', () => {
+          if (onSelectIncident) onSelectIncident(incident.id);
+        });
+
+        missionsRef.current.push(badgeMarker);
       });
+    }
 
-      markersRef.current.push(teamMarker);
-    });
-
-    // If an incident is actively selected, center smoothly
+    // 4. Center or Auto-Fit
     const selected = incidents.find(i => i.id === selectedIncidentId);
-    if (selected && selected.coordinates) {
-      const lat = parseCoord(selected.coordinates.lat);
-      const lng = parseCoord(selected.coordinates.lng);
-      if (lat && lng) {
+    if (selected) {
+      const coords = selected.coordinates || {};
+      const rawLat = coords.latitude ?? coords.lat ?? selected.latitude ?? selected.lat;
+      const rawLng = coords.longitude ?? coords.lng ?? selected.longitude ?? selected.lng;
+      const lat = parseCoord(rawLat);
+      const lng = parseCoord(rawLng);
+      if (lat && lng && mapInstanceRef.current) {
         mapInstanceRef.current.panTo({ lat, lng });
       }
+    } else if (hasValidBounds && mapInstanceRef.current) {
+      // Auto-fit to show all active markers without getting cut off
+      mapInstanceRef.current.fitBounds(bounds, { top: 60, right: 60, bottom: 60, left: 60 });
     }
-  }, [incidents, teams, selectedIncidentId, mapLoaded]);
+  }, [incidents, teams, selectedIncidentId, mapLoaded, showTeams, activeHudFilter]);
 
   // Real-Time USGS Earthquakes live layer
   useEffect(() => {
@@ -278,32 +524,112 @@ export const GoogleMapView = ({
     };
   }, [showLiveQuakes, mapLoaded]);
 
-  // Pan to selected district when changed
-  useEffect(() => {
-    if (!mapInstanceRef.current || !mapLoaded) return;
-    const centerCoords = getDistrictCenter(district);
-    mapInstanceRef.current.panTo({
-      lat: centerCoords.lat,
-      lng: centerCoords.lng
-    });
-    mapInstanceRef.current.setZoom(centerCoords.zoom);
-  }, [district, mapLoaded]);
+  // Count active SOS and ongoing missions
+  const checkCitizenSOS = (inc) => Boolean(
+    inc.isCitizenSOS ||
+    inc.is_citizen_sos ||
+    (typeof inc.id === 'string' && (inc.id.startsWith('RQ-') || inc.id.startsWith('SOS-') || inc.id.startsWith('CITIZEN-'))) ||
+    inc.type?.toUpperCase().includes('SOS') ||
+    inc.title?.toUpperCase().includes('SOS') ||
+    inc.description?.toUpperCase().includes('SOS') ||
+    inc.severity === 'Critical'
+  );
 
-  // Recenter Map
+  const checkRescueSOS = (inc) => Boolean(
+    inc.isRescueSOS ||
+    inc.is_rescue_sos ||
+    inc.type === 'Field SOS' ||
+    (typeof inc.id === 'string' && inc.id.startsWith('SOS-FIELD-')) ||
+    inc.title?.toUpperCase().includes('RESCUE SOS') ||
+    inc.title?.toUpperCase().includes('FIELD SOS')
+  );
+
+  const checkOngoingMission = (inc) => Boolean(
+    inc.status === 'Responding' ||
+    inc.status === 'On site' ||
+    inc.assignedTeam ||
+    inc.teamAssigned
+  );
+
+  const activeSosCount = incidents.filter(i => checkCitizenSOS(i) || checkRescueSOS(i)).length;
+  const activeMissionsCount = incidents.filter(checkOngoingMission).length;
+
+  const centerCoords = getDistrictCenter(district);
+
+  // Recenter Map & Fit All Markers
   const handleRecenter = () => {
-    if (!mapInstanceRef.current) return;
-    const centerCoords = getDistrictCenter(district);
-    mapInstanceRef.current.setCenter({
-      lat: centerCoords.lat,
-      lng: centerCoords.lng
+    if (!mapInstanceRef.current || !window.google) return;
+    const bounds = new window.google.maps.LatLngBounds();
+    let count = 0;
+
+    incidents.forEach(inc => {
+      const coords = inc.coordinates || {};
+      const lat = parseCoord(coords.latitude ?? coords.lat ?? inc.latitude ?? inc.lat);
+      const lng = parseCoord(coords.longitude ?? coords.lng ?? inc.longitude ?? inc.lng);
+      if (lat && lng) {
+        bounds.extend({ lat, lng });
+        count++;
+      }
     });
-    mapInstanceRef.current.setZoom(centerCoords.zoom);
+
+    if (showTeams) {
+      teams.forEach(t => {
+        const coords = t.coordinates || {};
+        const lat = parseCoord(coords.latitude ?? coords.lat);
+        const lng = parseCoord(coords.longitude ?? coords.lng);
+        if (lat && lng) {
+          bounds.extend({ lat, lng });
+          count++;
+        }
+      });
+    }
+
+    if (count > 0 && !bounds.isEmpty()) {
+      mapInstanceRef.current.fitBounds(bounds, { top: 60, right: 60, bottom: 60, left: 60 });
+    } else {
+      const centerCoords = getDistrictCenter(district);
+      mapInstanceRef.current.setCenter({
+        lat: centerCoords.lat,
+        lng: centerCoords.lng
+      });
+      mapInstanceRef.current.setZoom(centerCoords.zoom);
+    }
   };
 
   const handleZoom = (delta) => {
     if (!mapInstanceRef.current) return;
     const current = mapInstanceRef.current.getZoom() || 12;
     mapInstanceRef.current.setZoom(current + delta);
+  };
+
+  const handleFocusSOS = () => {
+    setActiveHudFilter('sos');
+    const firstSOS = incidents.find(i => checkCitizenSOS(i) || checkRescueSOS(i));
+    if (firstSOS && mapInstanceRef.current) {
+      const coords = firstSOS.coordinates || {};
+      const lat = parseCoord(coords.latitude ?? coords.lat ?? firstSOS.latitude ?? firstSOS.lat);
+      const lng = parseCoord(coords.longitude ?? coords.lng ?? firstSOS.longitude ?? firstSOS.lng);
+      if (lat && lng) {
+        mapInstanceRef.current.panTo({ lat, lng });
+        mapInstanceRef.current.setZoom(14);
+        if (onSelectIncident) onSelectIncident(firstSOS.id);
+      }
+    }
+  };
+
+  const handleFocusMissions = () => {
+    setActiveHudFilter('missions');
+    const firstMission = incidents.find(checkOngoingMission);
+    if (firstMission && mapInstanceRef.current) {
+      const coords = firstMission.coordinates || {};
+      const lat = parseCoord(coords.latitude ?? coords.lat ?? firstMission.latitude ?? firstMission.lat);
+      const lng = parseCoord(coords.longitude ?? coords.lng ?? firstMission.longitude ?? firstMission.lng);
+      if (lat && lng) {
+        mapInstanceRef.current.panTo({ lat, lng });
+        mapInstanceRef.current.setZoom(13);
+        if (onSelectIncident) onSelectIncident(firstMission.id);
+      }
+    }
   };
 
   if (loadError) {
@@ -566,6 +892,113 @@ export const GoogleMapView = ({
           </button>
         </div>
       )}
+
+      {/* Bottom Center: Tactical Missions & SOS Filter Bar */}
+      <div
+        style={{
+          position: 'absolute',
+          bottom: '14px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          backgroundColor: 'rgba(9, 17, 34, 0.94)',
+          backdropFilter: 'blur(10px)',
+          border: '1px solid #1E2E4B',
+          borderRadius: '9999px',
+          padding: '4px 8px',
+          zIndex: 10,
+          boxShadow: '0 6px 20px rgba(0,0,0,0.6)'
+        }}
+      >
+        <button
+          onClick={() => setActiveHudFilter('all')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '5px',
+            padding: '4px 10px',
+            borderRadius: '12px',
+            fontSize: '11px',
+            fontWeight: 700,
+            backgroundColor: activeHudFilter === 'all' ? '#1E3A8A' : 'transparent',
+            color: activeHudFilter === 'all' ? '#FFFFFF' : '#94A3B8',
+            border: 'none',
+            cursor: 'pointer'
+          }}
+        >
+          <span>📍 All</span>
+          <span style={{ fontSize: '10px', opacity: 0.8 }}>({incidents.length})</span>
+        </button>
+
+        {activeSosCount > 0 && (
+          <button
+            onClick={handleFocusSOS}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '5px',
+              padding: '4px 10px',
+              borderRadius: '12px',
+              fontSize: '11px',
+              fontWeight: 800,
+              backgroundColor: activeHudFilter === 'sos' ? '#EF4444' : 'rgba(239, 68, 68, 0.15)',
+              color: activeHudFilter === 'sos' ? '#FFFFFF' : '#EF4444',
+              border: '1px solid rgba(239, 68, 68, 0.4)',
+              cursor: 'pointer'
+            }}
+          >
+            <AlertTriangle size={12} />
+            <span>SOS DISTRESS</span>
+            <span style={{ background: '#EF4444', color: '#FFF', borderRadius: '50%', padding: '0 5px', fontSize: '9px' }}>{activeSosCount}</span>
+          </button>
+        )}
+
+        {activeMissionsCount > 0 && (
+          <button
+            onClick={handleFocusMissions}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '5px',
+              padding: '4px 10px',
+              borderRadius: '12px',
+              fontSize: '11px',
+              fontWeight: 800,
+              backgroundColor: activeHudFilter === 'missions' ? '#10B981' : 'rgba(16, 185, 129, 0.15)',
+              color: activeHudFilter === 'missions' ? '#FFFFFF' : '#10B981',
+              border: '1px solid rgba(16, 185, 129, 0.4)',
+              cursor: 'pointer'
+            }}
+          >
+            <Shield size={12} />
+            <span>MISSIONS</span>
+            <span style={{ background: '#10B981', color: '#FFF', borderRadius: '50%', padding: '0 5px', fontSize: '9px' }}>{activeMissionsCount}</span>
+          </button>
+        )}
+
+        <button
+          onClick={handleRecenter}
+          title="Fit view to all active markers"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+            padding: '4px 8px',
+            borderRadius: '12px',
+            fontSize: '11px',
+            fontWeight: 600,
+            backgroundColor: 'transparent',
+            color: '#38BDF8',
+            border: 'none',
+            cursor: 'pointer'
+          }}
+        >
+          <Maximize2 size={12} />
+          <span>Fit View</span>
+        </button>
+      </div>
 
       {/* Bottom Severity Legend */}
       <div

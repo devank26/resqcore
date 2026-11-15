@@ -29,6 +29,71 @@ class Incident {
     this.photoAssetPath,
   });
 
+  factory Incident.fromJson(Map<String, dynamic> json) {
+    String coordsStr = '30.5562° N, 79.5670° E';
+    if (json['coordinates'] != null) {
+      final c = json['coordinates'];
+      if (c is Map) {
+        final lat = c['lat'] ?? c['latitude'] ?? '30.5562';
+        final lng = c['lng'] ?? c['longitude'] ?? '79.5670';
+        coordsStr = '$lat, $lng';
+      } else {
+        coordsStr = c.toString();
+      }
+    }
+
+    final rawStatus = (json['status'] ?? 'Active').toString();
+    final normalizedStatus = (rawStatus.toLowerCase() == 'resolved') ? 'Resolved' : 'Active';
+
+    return Incident(
+      id: (json['id'] ?? 'INC-001').toString(),
+      title: (json['title'] ?? 'Emergency Incident').toString(),
+      location: (json['location'] ?? json['fullAddress'] ?? 'Disaster Response Zone').toString(),
+      timestamp: (json['time'] ?? json['timestamp'] ?? 'Today · Just now').toString(),
+      severity: (json['severity'] ?? 'High').toString(),
+      status: normalizedStatus,
+      teamAssigned: (json['assignedTeam'] ?? json['teamAssigned'] ?? 'Unassigned').toString(),
+      eta: (json['eta'] ?? 'Standby').toString(),
+      affectedCount: (json['affected'] ?? json['affectedCount'] ?? 1) as int,
+      coordinates: coordsStr,
+      description: (json['description'] ?? 'Field operations in progress').toString(),
+      substatus: (json['substatus'] ?? json['responseDetail'] ?? json['responseSummary'] ?? 'Live operational response').toString(),
+      photoAssetPath: json['photoAssetPath'] as String? ?? 'assets/images/scenarios/flood_response_street.png',
+    );
+  }
+
+  Incident copyWith({
+    String? id,
+    String? title,
+    String? location,
+    String? timestamp,
+    String? severity,
+    String? status,
+    String? teamAssigned,
+    String? eta,
+    int? affectedCount,
+    String? coordinates,
+    String? description,
+    String? substatus,
+    String? photoAssetPath,
+  }) {
+    return Incident(
+      id: id ?? this.id,
+      title: title ?? this.title,
+      location: location ?? this.location,
+      timestamp: timestamp ?? this.timestamp,
+      severity: severity ?? this.severity,
+      status: status ?? this.status,
+      teamAssigned: teamAssigned ?? this.teamAssigned,
+      eta: eta ?? this.eta,
+      affectedCount: affectedCount ?? this.affectedCount,
+      coordinates: coordinates ?? this.coordinates,
+      description: description ?? this.description,
+      substatus: substatus ?? this.substatus,
+      photoAssetPath: photoAssetPath ?? this.photoAssetPath,
+    );
+  }
+
   static List<Incident> mockIncidents() {
     return [
       const Incident(

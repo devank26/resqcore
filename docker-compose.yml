@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: resqcore-backend
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+    environment:
+      - PORT=5000
+      - NODE_ENV=production
+
+  command-center:
+    build:
+      context: ./resqcore
+      dockerfile: Dockerfile
+    container_name: resqcore-command-center
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

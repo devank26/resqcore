@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../theme/tactical_theme.dart';
 import '../models/app_state.dart';
 import '../models/chat_message.dart';
+import '../services/tactical_sync_service.dart';
 import '../widgets/tactical_header.dart';
 
 class TacticalChatScreen extends StatefulWidget {
@@ -25,6 +26,8 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
 
   final List<String> _quickBursts = [
     'En route',
+    'On scene',
+    'Resolved · All safe',
     'Need Medevac',
     'Grid cleared',
     'Radio silence',
@@ -32,27 +35,59 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    widget.appState.addListener(_onAppStateChanged);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom(animate: false));
+  }
+
+  @override
   void dispose() {
+    widget.appState.removeListener(_onAppStateChanged);
     _textController.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _onAppStateChanged() {
+    if (mounted) {
+      setState(() {});
+      _scrollToBottom();
+    }
+  }
+
+  void _scrollToBottom({bool animate = true}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        if (animate) {
+          _scrollController.animateTo(
+            _scrollController.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeOut,
+          );
+        } else {
+          _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+        }
+      }
+    });
   }
 
   void _sendMessage({String? customText, String? locationTag}) {
     final text = customText ?? _textController.text;
     if (text.trim().isEmpty) return;
     widget.appState.addMessage(text, locationTag: locationTag);
-    if (customText == null) _textController.clear();
 
-    Future.delayed(const Duration(milliseconds: 100), () {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
-      }
-    });
+    // Sync incident status if quick status bursts are used
+    if (customText == 'En route' && widget.appState.incidents.isNotEmpty) {
+      widget.appState.updateIncidentStatus(widget.appState.incidents.first.id, 'Responding', notes: 'Rescue team en route to location');
+    } else if (customText == 'On scene' && widget.appState.incidents.isNotEmpty) {
+      widget.appState.updateIncidentStatus(widget.appState.incidents.first.id, 'On site', notes: 'Rescue team arrived on scene');
+    } else if (customText == 'Resolved · All safe' && widget.appState.incidents.isNotEmpty) {
+      widget.appState.updateIncidentStatus(widget.appState.incidents.first.id, 'Resolved', notes: 'Evacuation completed · All casualties accounted for');
+    }
+
+    if (customText == null) _textController.clear();
+    _scrollToBottom();
   }
 
   @override
@@ -114,16 +149,20 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
                               color: TacticalColors.surfaceContainerHigh,
                               borderRadius: BorderRadius.circular(12),
                             ),
-                            child: const Row(
+                            child: Row(
                               children: [
-                                Icon(Icons.cell_tower, color: TacticalColors.tertiary, size: 12),
-                                SizedBox(width: 4),
+                                Icon(
+                                  Icons.cell_tower,
+                                  color: TacticalSyncService.isConnected ? TacticalColors.tertiary : TacticalColors.warningAmber,
+                                  size: 12,
+                                ),
+                                const SizedBox(width: 4),
                                 Text(
-                                  'Mesh Synced',
+                                  TacticalSyncService.isConnected ? 'Mesh Online' : 'Relay Polling',
                                   style: TextStyle(
                                     fontSize: 10,
                                     fontWeight: FontWeight.bold,
-                                    color: TacticalColors.tertiary,
+                                    color: TacticalSyncService.isConnected ? TacticalColors.tertiary : TacticalColors.warningAmber,
                                   ),
                                 ),
                               ],
@@ -135,9 +174,11 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          const Text(
-                            'Offline RF Radio Node • Relay hop: 2 ms',
-                            style: TextStyle(
+                          Text(
+                            TacticalSyncService.isConnected
+                                ? 'Real-Time WebSocket • Gateway Latency: 4 ms'
+                                : 'Offline Radio Node • Polling relay every 4s',
+                            style: const TextStyle(
                               fontSize: 11,
                               color: TacticalColors.onSurfaceVariant,
                             ),
@@ -340,9 +381,11 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
                 IconButton(
                   icon: const Icon(Icons.add_location_alt, color: TacticalColors.tertiary, size: 20),
                   onPressed: () {
+                    final lat = widget.appState.currentLat;
+                    final lng = widget.appState.currentLng;
                     _sendMessage(
-                      customText: 'Location ping broadcasted',
-                      locationTag: 'Grid Sector 4 (30.5562, 79.5670)',
+                      customText: '📍 Tactical GPS Position Shared',
+                      locationTag: '${lat.toStringAsFixed(4)}° N, ${lng.toStringAsFixed(4)}° E',
                     );
                   },
                 ),

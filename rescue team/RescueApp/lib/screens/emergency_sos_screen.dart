@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import '../theme/tactical_theme.dart';
 import '../models/app_state.dart';
 import '../widgets/sos_orb_button.dart';
@@ -18,6 +19,43 @@ class EmergencySosScreen extends StatefulWidget {
 }
 
 class _EmergencySosScreenState extends State<EmergencySosScreen> {
+  double _lat = 30.3165;
+  double _lng = 78.0322;
+  String _locationName = 'Acquiring GPS...';
+  bool _gpsLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchGps();
+  }
+
+  Future<void> _fetchGps() async {
+    try {
+      final pos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.medium,
+      ).timeout(const Duration(seconds: 6));
+      if (mounted) {
+        setState(() {
+          _lat = pos.latitude;
+          _lng = pos.longitude;
+          _locationName = 'Live GPS Fix';
+          _gpsLoading = false;
+        });
+      }
+    } catch (_) {
+      // Fall back to AppState last known position
+      if (mounted) {
+        setState(() {
+          _lat = widget.appState.currentLat;
+          _lng = widget.appState.currentLng;
+          _locationName = 'Last Known Position';
+          _gpsLoading = false;
+        });
+      }
+    }
+  }
+
   void _onSosTriggered() {
     widget.appState.triggerSos();
     showDialog(
@@ -65,9 +103,15 @@ class _EmergencySosScreenState extends State<EmergencySosScreen> {
                     'Operative: ${widget.appState.userName}',
                     style: const TextStyle(fontSize: 11, color: TacticalColors.primary),
                   ),
-                  const Text(
-                    'GPS: 30.3165° N, 78.0322° E (Dehradun)',
-                    style: TextStyle(fontSize: 11, color: TacticalColors.tertiary),
+                  Text(
+                    _gpsLoading
+                        ? 'GPS: Acquiring location...'
+                        : 'GPS: ${_lat.toStringAsFixed(4)}° N, ${_lng.toStringAsFixed(4)}° E',
+                    style: const TextStyle(fontSize: 11, color: TacticalColors.tertiary),
+                  ),
+                  Text(
+                    _gpsLoading ? '' : '📍 $_locationName',
+                    style: const TextStyle(fontSize: 10, color: TacticalColors.onSurfaceVariant),
                   ),
                   const Text(
                     'Dispatched: Team Alpha SAR Unit',

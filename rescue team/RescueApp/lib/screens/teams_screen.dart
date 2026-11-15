@@ -240,7 +240,7 @@ class _TeamsScreenState extends State<TeamsScreen> {
                       Icon(Icons.terrain, color: TacticalColors.tertiary, size: 14),
                       SizedBox(width: 4),
                       Text(
-                        'Mountain Quick Response • Sector 4 Grid Alpha',
+                        'Mountain Quick Response',
                         style: TextStyle(
                           fontSize: 12,
                           color: TacticalColors.onSurfaceVariant,

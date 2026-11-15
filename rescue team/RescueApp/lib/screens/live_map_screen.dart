@@ -202,6 +202,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                 Positioned.fill(
                   child: TacticalMapCanvas(
                     showControls: true,
+                    appState: widget.appState,
                     onMarkerSelected: (marker) {
                       setState(() => _selectedIncident = marker);
                       ScaffoldMessenger.of(context).showSnackBar(

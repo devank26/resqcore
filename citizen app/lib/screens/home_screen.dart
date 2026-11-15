@@ -5,6 +5,7 @@ import '../theme/app_colors.dart';
 import '../theme/app_text_styles.dart';
 import '../widgets/incident_card.dart';
 import 'dialogs/call_112_dialog.dart';
+import 'dialogs/location_selector_dialog.dart';
 import 'dialogs/quick_sos_dialog.dart';
 import 'dialogs/request_detail_dialog.dart';
 import 'dialogs/safety_advice_dialog.dart';
@@ -102,49 +103,78 @@ class HomeScreen extends StatelessWidget {
           ),
           const SizedBox(height: 10),
 
-          // Geolocation Selector Pill
-          InkWell(
-            onTap: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Current GPS locked: Fort Kochi, Ernakulam'),
-                  duration: Duration(seconds: 1),
-                ),
-              );
-            },
-            borderRadius: BorderRadius.circular(999),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                color: AppColors.surfaceContainer,
+          // Geolocation Selector Pill & Change Location Action
+          Row(
+            children: [
+              InkWell(
+                onTap: () {
+                  LocationSelectorDialog.show(context);
+                },
                 borderRadius: BorderRadius.circular(999),
-                border: Border.all(color: AppColors.strokeBorder, width: 0.5),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceContainer,
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: const Color(0xFF38BDF8).withOpacity(0.6), width: 0.8),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.location_on,
+                        size: 16,
+                        color: Color(0xFF38BDF8),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        provider.currentLocationName,
+                        style: AppTextStyles.labelMd.copyWith(
+                          color: AppColors.textWhite,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      const Icon(
+                        Icons.expand_more,
+                        size: 16,
+                        color: Color(0xFF38BDF8),
+                      ),
+                    ],
+                  ),
+                ),
               ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(
-                    Icons.location_on,
-                    size: 16,
-                    color: AppColors.primary,
+              const SizedBox(width: 8),
+              InkWell(
+                onTap: () {
+                  LocationSelectorDialog.show(context);
+                },
+                borderRadius: BorderRadius.circular(6),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0284C7).withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: const Color(0xFF0284C7), width: 0.8),
                   ),
-                  const SizedBox(width: 6),
-                  Text(
-                    provider.currentLocationName,
-                    style: AppTextStyles.labelMd.copyWith(
-                      color: AppColors.textWhite,
-                      fontWeight: FontWeight.w600,
-                    ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.edit_location_alt, size: 13, color: Color(0xFF38BDF8)),
+                      SizedBox(width: 4),
+                      Text(
+                        'Change',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF38BDF8),
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 4),
-                  const Icon(
-                    Icons.expand_more,
-                    size: 16,
-                    color: AppColors.textSecondary,
-                  ),
-                ],
+                ),
               ),
-            ),
+            ],
           ),
           const SizedBox(height: 18),
 

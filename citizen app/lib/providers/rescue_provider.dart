@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import '../models/emergency_type.dart';
 import '../models/emergency_request.dart';
 import '../models/hazard_zone.dart';
@@ -10,6 +11,72 @@ import '../services/google_sign_in_service.dart';
 import '../services/account_storage_service.dart';
 
 class RescueProvider extends ChangeNotifier {
+  RescueProvider() {
+    initLocationTracking();
+  }
+
+  /// Safely & quickly acquire live GPS coordinates with fallback chain:
+  /// 1. Instant last known position (< 50ms)
+  /// 2. High accuracy getCurrentPosition with strict 3s timeout
+  /// 3. Medium/Low accuracy getCurrentPosition with 2s timeout
+  /// Never hangs indefinitely on emulators or weak satellite conditions.
+  Future<Position?> acquireLivePosition({Duration timeout = const Duration(seconds: 3)}) async {
+    try {
+      final enabled = await Geolocator.isLocationServiceEnabled();
+      if (!enabled) return null;
+
+      var perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) {
+        perm = await Geolocator.requestPermission();
+      }
+      if (perm != LocationPermission.always && perm != LocationPermission.whileInUse) {
+        return null;
+      }
+
+      // Step 1: Check instant last known position
+      Position? bestPos;
+      try {
+        bestPos = await Geolocator.getLastKnownPosition();
+      } catch (_) {}
+
+      // Step 2: Try high accuracy with timeout
+      try {
+        final current = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+          timeLimit: timeout,
+        );
+        return current;
+      } catch (_) {}
+
+      // Step 3: Try medium accuracy with short timeout
+      try {
+        final currentMed = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.medium,
+          timeLimit: const Duration(seconds: 2),
+        );
+        return currentMed;
+      } catch (_) {}
+
+      return bestPos;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> initLocationTracking() async {
+    try {
+      final pos = await acquireLivePosition(timeout: const Duration(seconds: 4));
+      if (pos != null) {
+        _currentLatitude = pos.latitude;
+        _currentLongitude = pos.longitude;
+        _draftLatitude = pos.latitude;
+        _draftLongitude = pos.longitude;
+        _currentLocationName = '${pos.latitude.toStringAsFixed(4)}°N, ${pos.longitude.toStringAsFixed(4)}°E (Live GPS)';
+        notifyListeners();
+      }
+    } catch (_) {}
+  }
+
   // Theme state
   bool _isDarkMode = true;
   bool get isDarkMode => _isDarkMode;
@@ -35,7 +102,9 @@ class RescueProvider extends ChangeNotifier {
   String _email = '';
   final List<String> _otpDigits = ['', '', '', '', '', ''];
   bool _hasOtpError = false;
-  String _currentLocationName = '';
+  String _currentLocationName = 'Dehradun, Uttarakhand';
+  double _currentLatitude = 30.3165;
+  double _currentLongitude = 78.0322;
 
   // Saved user profile / credentials
   UserProfile _currentUser = const UserProfile(
@@ -58,15 +127,21 @@ class RescueProvider extends ChangeNotifier {
   // Navigation Hub Tab (0: Home, 1: Requests, 2: Alerts, 3: Inbox)
   int _activeNavIndex = 0;
 
+  // Real-time backend alerts
+  List<Map<String, dynamic>> _liveAlerts = [];
+  List<Map<String, dynamic>> get liveAlerts => _liveAlerts;
+
   // Requests Tab Filter (0: Recent, 1: All requests)
   int _requestsFilterTab = 0;
 
   // Emergency Creation Wizard Draft
   EmergencyType _draftType = EmergencyType.flood;
-  String _draftAddress = '18, KB Jacob Road, Fort Kochi';
-  String _draftCity = 'Ernakulam, Kerala 682001';
+  String _draftAddress = 'Rajpur Road, Sector 01';
+  String _draftCity = 'Dehradun, Uttarakhand 248001';
+  double? _draftLatitude = 30.3165;
+  double? _draftLongitude = 78.0322;
   String _draftDescription =
-      'Water is entering our ground floor. Four people need help, including one older adult. We are waiting upstairs.';
+      'Flash flood waters rising near Alaknanda gorge. Multiple families require extraction assistance.';
   String _draftContact = '+91 98470 21836';
   bool _draftConsent = true;
   String _draftPhotoAsset = 'assets/images/scenarios/flood_river_boat.png';
@@ -398,6 +473,25 @@ class RescueProvider extends ChangeNotifier {
   List<String> get otpDigits => _otpDigits;
   bool get hasOtpError => _hasOtpError;
   String get currentLocationName => _currentLocationName;
+  double get currentLatitude => _draftLatitude ?? _currentLatitude;
+  double get currentLongitude => _draftLongitude ?? _currentLongitude;
+
+  void updateLocation({
+    required String locationName,
+    String? address,
+    String? city,
+    required double latitude,
+    required double longitude,
+  }) {
+    _currentLocationName = locationName;
+    _draftAddress = address ?? locationName;
+    _draftCity = city ?? 'Uttarakhand';
+    _draftLatitude = latitude;
+    _draftLongitude = longitude;
+    _currentLatitude = latitude;
+    _currentLongitude = longitude;
+    notifyListeners();
+  }
   int get activeNavIndex => _activeNavIndex;
   int get requestsFilterTab => _requestsFilterTab;
 
@@ -603,6 +697,7 @@ class RescueProvider extends ChangeNotifier {
   }
 
   void logout() {
+    CommandCenterService.stopAllTracking();
     _isLoggedIn = false;
     _isDemoMode = false;
     _hasOtpError = true;
@@ -656,6 +751,12 @@ class RescueProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setDraftCoordinates(double latitude, double longitude) {
+    _draftLatitude = latitude;
+    _draftLongitude = longitude;
+    notifyListeners();
+  }
+
   void setDraftDescription(String desc) {
     _draftDescription = desc;
     notifyListeners();
@@ -676,11 +777,24 @@ class RescueProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 1-Click Instant SOS Dispatch without form filling
-  EmergencyRequest triggerQuickSos() {
+  /// 1-Click Instant SOS Dispatch with Live GPS lock
+  Future<EmergencyRequest> triggerQuickSos() async {
     final now = DateTime.now();
     final newId =
         'SOS-${now.year.toString().substring(2)}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}-${(now.hour * 100 + now.minute).toString().padLeft(4, '0')}';
+
+    // Lock live GPS position before firing the SOS alert
+    final pos = await acquireLivePosition(timeout: const Duration(seconds: 2));
+    if (pos != null) {
+      _currentLatitude = pos.latitude;
+      _currentLongitude = pos.longitude;
+      _draftLatitude = pos.latitude;
+      _draftLongitude = pos.longitude;
+      _currentLocationName = '${pos.latitude.toStringAsFixed(4)}°N, ${pos.longitude.toStringAsFixed(4)}°E (Live GPS)';
+    }
+
+    final lat = _draftLatitude ?? _currentLatitude;
+    final lng = _draftLongitude ?? _currentLongitude;
 
     final sosRequest = EmergencyRequest(
       id: newId,
@@ -690,11 +804,11 @@ class RescueProvider extends ChangeNotifier {
       timeLabel: 'Just now · ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}',
       location: _currentLocationName,
       fullAddress: '$_draftAddress, $_draftCity',
-      dispatchUpdate: 'Priority 1 SOS alert dispatched to Zone 04 Command & nearest unit Bravo 02',
+      dispatchUpdate: 'Priority 1 SOS alert dispatched to Command Center & field units',
       dispatchIcon: Icons.emergency,
       description:
-          'Automated One-Touch SOS triggered from ${_currentUser.fullName}. Immediate rescue assistance required at current GPS lock.',
-      contactNumber: _currentUser.phoneNumber,
+          'Automated One-Touch SOS triggered from ${_currentUser.fullName.isNotEmpty ? _currentUser.fullName : "Citizen"}. Immediate rescue assistance required at GPS lock ($lat, $lng).',
+      contactNumber: _currentUser.phoneNumber.isNotEmpty ? _currentUser.phoneNumber : '+91 98470 21836',
       photoCount: 0,
       createdAt: now,
       isRecent: true,
@@ -712,9 +826,18 @@ class RescueProvider extends ChangeNotifier {
       fullAddress: sosRequest.fullAddress,
       description: sosRequest.description,
       contactNumber: sosRequest.contactNumber,
-      citizenName: _currentUser.fullName,
+      citizenName: _currentUser.fullName.isNotEmpty ? _currentUser.fullName : 'Citizen User',
       severity: 'High',
+      latitude: lat,
+      longitude: lng,
     );
+
+    // Start Real-Time Live Status Tracking with Command Center
+    if (!_isDemoMode) {
+      CommandCenterService.startTrackingRequest(sosRequest.id, (update) {
+        _updateRequestFromBackend(sosRequest.id, update);
+      });
+    }
 
     notifyListeners();
     return sosRequest;
@@ -724,6 +847,9 @@ class RescueProvider extends ChangeNotifier {
     final now = DateTime.now();
     final newId =
         'RQ-${now.year.toString().substring(2)}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}-${(now.hour * 100 + now.minute).toString().padLeft(4, '0')}';
+
+    final lat = _draftLatitude ?? _currentLatitude;
+    final lng = _draftLongitude ?? _currentLongitude;
 
     final newRequest = EmergencyRequest(
       id: newId,
@@ -757,11 +883,60 @@ class RescueProvider extends ChangeNotifier {
       fullAddress: newRequest.fullAddress,
       description: newRequest.description,
       contactNumber: newRequest.contactNumber,
-      citizenName: _currentUser.fullName,
+      citizenName: _currentUser.fullName.isNotEmpty ? _currentUser.fullName : 'Citizen User',
       severity: _draftType == EmergencyType.flood ? 'High' : 'Medium',
+      latitude: lat,
+      longitude: lng,
     );
+
+    // Start Real-Time Live Status Tracking with Command Center
+    if (!_isDemoMode) {
+      CommandCenterService.startTrackingRequest(newRequest.id, (update) {
+        _updateRequestFromBackend(newRequest.id, update);
+      });
+    }
 
     notifyListeners();
     return newRequest;
+  }
+
+  /// Updates local emergency request status whenever Command Center dispatches a team
+  void _updateRequestFromBackend(String requestId, Map<String, dynamic> update) {
+    if (_isDemoMode) return;
+
+    final index = _requests.indexWhere((r) => r.id == requestId);
+    if (index == -1) return;
+
+    final existing = _requests[index];
+    final backendStatus = (update['status'] ?? '').toString().toLowerCase();
+    final assignedTeam = (update['assignedTeam'] ?? update['teamAssigned'] ?? '').toString();
+    final eta = (update['eta'] ?? '').toString();
+
+    String dispatchText = existing.dispatchUpdate;
+    if (update['dispatchUpdate'] != null && update['dispatchUpdate'].toString().isNotEmpty) {
+      dispatchText = update['dispatchUpdate'].toString();
+    } else if (assignedTeam.isNotEmpty && assignedTeam != 'Unassigned' && assignedTeam != 'null') {
+      dispatchText = '$assignedTeam is en route · ETA ${eta.isNotEmpty ? eta : "10 min"}';
+    }
+
+    RequestStatus newStatus = existing.status;
+    if (backendStatus == 'resolved' || backendStatus == 'completed') {
+      newStatus = RequestStatus.resolved;
+    } else if (backendStatus == 'responding' || backendStatus == 'on site' || backendStatus == 'assigned') {
+      newStatus = RequestStatus.assigned;
+    } else if (backendStatus == 'verified') {
+      newStatus = RequestStatus.inProgress;
+    }
+
+    _requests[index] = existing.copyWith(
+      status: newStatus,
+      dispatchUpdate: dispatchText,
+    );
+
+    if (_lastSubmittedRequest?.id == requestId) {
+      _lastSubmittedRequest = _requests[index];
+    }
+
+    notifyListeners();
   }
 }

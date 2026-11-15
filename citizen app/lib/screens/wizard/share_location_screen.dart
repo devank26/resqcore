@@ -1,10 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
 import '../../providers/rescue_provider.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_text_styles.dart';
 import '../../widgets/app_top_bar.dart';
+import '../dialogs/location_selector_dialog.dart';
 import 'add_report_details_screen.dart';
+
+const String _kGoogleMapsApiKey = 'AIzaSyAMaBxMmCY1r2TmqoMZUm2-v8FfhE1n44g';
 
 class ShareLocationScreen extends StatefulWidget {
   const ShareLocationScreen({super.key});
@@ -17,6 +23,7 @@ class _ShareLocationScreenState extends State<ShareLocationScreen>
     with SingleTickerProviderStateMixin {
   late TextEditingController _addressController;
   late AnimationController _pulseController;
+  final MapController _mapController = MapController();
   bool _isDetectingGps = false;
   bool _useSatelliteRadar = true;
 
@@ -38,32 +45,63 @@ class _ShareLocationScreenState extends State<ShareLocationScreen>
     super.dispose();
   }
 
-  void _onCurrentLocationPressed() {
-    setState(() {
-      _isDetectingGps = true;
-    });
-    Future.delayed(const Duration(milliseconds: 600), () {
-      if (mounted) {
+  Future<void> _onCurrentLocationPressed() async {
+    setState(() => _isDetectingGps = true);
+    final provider = context.read<RescueProvider>();
+    try {
+      final pos = await provider.acquireLivePosition(timeout: const Duration(seconds: 4));
+      if (!mounted) return;
+
+      if (pos != null) {
+        final label = '${pos.latitude.toStringAsFixed(4)}°N, ${pos.longitude.toStringAsFixed(4)}°E (Live GPS)';
         setState(() {
           _isDetectingGps = false;
-          _addressController.text = '18, KB Jacob Road, Fort Kochi (Refreshed)';
+          _addressController.text = label;
         });
-        context.read<RescueProvider>().setDraftAddress(
-              '18, KB Jacob Road, Fort Kochi',
-              'Ernakulam, Kerala 682001',
-            );
+
+        provider.updateLocation(
+          locationName: label,
+          address: 'Live GPS Pin',
+          city: 'Uttarakhand Operational Theater',
+          latitude: pos.latitude,
+          longitude: pos.longitude,
+        );
+
+        _mapController.move(LatLng(pos.latitude, pos.longitude), 14.5);
+
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('GPS Signal Locked: Sector 4-B, Fort Kochi'),
-            duration: Duration(seconds: 1),
+          SnackBar(
+            content: Text('📍 Live GPS Locked: ${pos.latitude.toStringAsFixed(4)}°N, ${pos.longitude.toStringAsFixed(4)}°E'),
+            backgroundColor: const Color(0xFF059669),
           ),
         );
+      } else {
+        _applyFallbackLocation(provider);
       }
+    } catch (e) {
+      if (mounted) {
+        _applyFallbackLocation(provider);
+      }
+    } finally {
+      if (mounted) setState(() => _isDetectingGps = false);
+    }
+  }
+
+  void _applyFallbackLocation(RescueProvider provider) {
+    setState(() {
+      _isDetectingGps = false;
+      _addressController.text = provider.currentLocationName;
     });
+    provider.setDraftAddress(provider.currentLocationName, 'Uttarakhand');
+    _mapController.move(LatLng(provider.currentLatitude, provider.currentLongitude), 13.5);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Location set to: ${provider.currentLocationName}')),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final provider = context.watch<RescueProvider>();
     return Scaffold(
       backgroundColor: AppColors.surface,
       body: SafeArea(
@@ -155,11 +193,66 @@ class _ShareLocationScreenState extends State<ShareLocationScreen>
                         height: 1.35,
                       ),
                     ),
-                    const SizedBox(height: 18),
+                    const SizedBox(height: 14),
+
+                    // Uttarakhand Districts Quick Selection
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'OPERATIONAL DISTRICTS (UTTARAKHAND)',
+                          style: AppTextStyles.labelSm.copyWith(
+                            color: const Color(0xFF38BDF8),
+                            letterSpacing: 0.8,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 10.5,
+                          ),
+                        ),
+                        InkWell(
+                          onTap: () async {
+                            await LocationSelectorDialog.show(context);
+                            if (mounted) {
+                              final prov = context.read<RescueProvider>();
+                              setState(() {
+                                _addressController.text = prov.currentLocationName;
+                              });
+                            }
+                          },
+                          child: const Text(
+                            'All Districts ▾',
+                            style: TextStyle(
+                              color: Color(0xFF38BDF8),
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          _buildDistrictChip('📍 Dehradun', 30.3165, 78.0322, 'Rajpur Road, Dehradun, Uttarakhand'),
+                          const SizedBox(width: 6),
+                          _buildDistrictChip('📍 Joshimath', 30.5593, 79.5644, 'Main Bazaar, Joshimath, Chamoli, Uttarakhand'),
+                          const SizedBox(width: 6),
+                          _buildDistrictChip('📍 Chamoli', 30.4072, 79.3242, 'Gopeshwar Road, Chamoli, Uttarakhand'),
+                          const SizedBox(width: 6),
+                          _buildDistrictChip('📍 Alaknanda', 30.5650, 79.5450, 'Alaknanda River Gorge, Sector 1, Uttarakhand'),
+                          const SizedBox(width: 6),
+                          _buildDistrictChip('📍 Rishikesh', 30.0869, 78.2676, 'Triveni Ghat, Rishikesh, Uttarakhand'),
+                          const SizedBox(width: 6),
+                          _buildDistrictChip('📍 Haridwar', 29.9457, 78.1642, 'Har Ki Pauri, Haridwar, Uttarakhand'),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
 
                     // Interactive Tactical Map Box
                     Container(
-                      height: 280,
+                      height: 290,
                       width: double.infinity,
                       decoration: BoxDecoration(
                         color: AppColors.surfaceContainerLow,
@@ -180,75 +273,111 @@ class _ShareLocationScreenState extends State<ShareLocationScreen>
                         borderRadius: BorderRadius.circular(16),
                         child: Stack(
                           children: [
-                            // Base Dark Satellite / Vector Map Visual
-                            Positioned.fill(
-                              child: Image.asset(
-                                _useSatelliteRadar
-                                    ? 'assets/images/scenarios/command_radar_dispatch.png'
-                                    : 'assets/images/map_dark.png',
-                                fit: BoxFit.cover,
-                                errorBuilder: (context, error, stackTrace) {
-                                  return Container(
-                                    color: const Color(0xFF101927),
-                                    child: const Center(
-                                      child: Icon(
-                                        Icons.map,
-                                        size: 64,
-                                        color: AppColors.strokeBorder,
-                                      ),
-                                    ),
+                            FlutterMap(
+                              mapController: _mapController,
+                              options: MapOptions(
+                                initialCenter: LatLng(provider.currentLatitude, provider.currentLongitude),
+                                initialZoom: 13.5,
+                                minZoom: 5,
+                                maxZoom: 19,
+                                onTap: (tapPosition, point) {
+                                  final label = '${point.latitude.toStringAsFixed(4)}°N, ${point.longitude.toStringAsFixed(4)}°E (Tapped Pin)';
+                                  setState(() {
+                                    _addressController.text = label;
+                                  });
+                                  provider.updateLocation(
+                                    locationName: label,
+                                    address: 'Selected Tactical Pin',
+                                    city: 'Uttarakhand Operational Theater',
+                                    latitude: point.latitude,
+                                    longitude: point.longitude,
                                   );
                                 },
                               ),
+                              children: [
+                                TileLayer(
+                                  urlTemplate: _useSatelliteRadar
+                                      ? 'https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&key=$_kGoogleMapsApiKey'
+                                      : 'https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&key=$_kGoogleMapsApiKey',
+                                  subdomains: const ['0', '1', '2', '3'],
+                                  userAgentPackageName: 'com.example.rescue_core',
+                                  maxZoom: 20,
+                                ),
+                                MarkerLayer(
+                                  markers: [
+                                    Marker(
+                                      point: LatLng(provider.currentLatitude, provider.currentLongitude),
+                                      width: 130,
+                                      height: 80,
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xFF0F172A).withOpacity(0.92),
+                                              borderRadius: BorderRadius.circular(8),
+                                              border: Border.all(color: const Color(0xFFEF4444), width: 1.2),
+                                              boxShadow: const [BoxShadow(color: Color(0x88EF4444), blurRadius: 8)],
+                                            ),
+                                            child: Text(
+                                              '🚨 Incident Location',
+                                              style: AppTextStyles.labelSm.copyWith(
+                                                color: Colors.white,
+                                                fontSize: 9.5,
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(height: 2),
+                                          AnimatedBuilder(
+                                            animation: _pulseController,
+                                            builder: (context, child) {
+                                              return Container(
+                                                width: 32,
+                                                height: 32,
+                                                decoration: BoxDecoration(
+                                                  shape: BoxShape.circle,
+                                                  color: const Color(0xFFEF4444).withOpacity(0.3 * (1 - _pulseController.value)),
+                                                  border: Border.all(color: const Color(0xFFEF4444), width: 2),
+                                                ),
+                                                child: const Center(
+                                                  child: Icon(Icons.location_on, size: 20, color: Color(0xFFEF4444)),
+                                                ),
+                                              );
+                                            },
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
                             ),
 
                             // Satellite / Vector Mode Switcher Pill
                             Positioned(
-                              top: 14,
-                              left: 14,
+                              top: 12,
+                              left: 12,
                               child: InkWell(
-                                onTap: () => setState(
-                                    () => _useSatelliteRadar = !_useSatelliteRadar),
+                                onTap: () => setState(() => _useSatelliteRadar = !_useSatelliteRadar),
                                 borderRadius: BorderRadius.circular(999),
                                 child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 10, vertical: 5),
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                                   decoration: BoxDecoration(
-                                    color: AppColors.surfaceContainerHigh
-                                        .withValues(alpha: 0.90),
+                                    color: const Color(0xFF0F172A).withOpacity(0.90),
                                     borderRadius: BorderRadius.circular(999),
-                                    border: Border.all(
-                                      color: AppColors.primaryContainer
-                                          .withValues(alpha: 0.5),
-                                      width: 1,
-                                    ),
-                                    boxShadow: const [
-                                      BoxShadow(
-                                        color: Color(0x66000000),
-                                        blurRadius: 6,
-                                      ),
-                                    ],
+                                    border: Border.all(color: const Color(0xFF38BDF8), width: 1),
+                                    boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 6)],
                                   ),
                                   child: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      Icon(
-                                        _useSatelliteRadar
-                                            ? Icons.satellite_alt
-                                            : Icons.map,
-                                        size: 13,
-                                        color: AppColors.primary,
-                                      ),
+                                      Icon(_useSatelliteRadar ? Icons.satellite_alt : Icons.map, size: 13, color: const Color(0xFF38BDF8)),
                                       const SizedBox(width: 6),
                                       Text(
-                                        _useSatelliteRadar
-                                            ? 'Overwatch Radar'
-                                            : 'Street Vector',
-                                        style: AppTextStyles.labelSm.copyWith(
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.w700,
-                                          color: AppColors.textWhite,
-                                        ),
+                                        _useSatelliteRadar ? 'Google Satellite' : 'Google Map',
+                                        style: AppTextStyles.labelSm.copyWith(fontSize: 10, fontWeight: FontWeight.w700, color: Colors.white),
                                       ),
                                     ],
                                   ),
@@ -256,187 +385,21 @@ class _ShareLocationScreenState extends State<ShareLocationScreen>
                               ),
                             ),
 
-                            // Tactical Nocturnal Grid & Shimmer Overlay
-                            Positioned.fill(
+                            // Top-right coordinates badge
+                            Positioned(
+                              top: 12,
+                              right: 12,
                               child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                                 decoration: BoxDecoration(
-                                  gradient: LinearGradient(
-                                    begin: Alignment.bottomCenter,
-                                    end: Alignment.topCenter,
-                                    colors: [
-                                      AppColors.surfaceContainerLowest
-                                          .withValues(alpha: 0.8),
-                                      Colors.transparent,
-                                      AppColors.surface.withValues(alpha: 0.3),
-                                    ],
-                                  ),
+                                  color: const Color(0xFF0F172A).withOpacity(0.92),
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: AppColors.strokeBorder, width: 1),
                                 ),
-                              ),
-                            ),
-
-                            // Map Geographic Placemark Labels (Sector 4-B)
-                            Positioned(
-                              top: 24,
-                              right: 20,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.end,
-                                children: [
-                                  Text(
-                                    'ERNAKULAM',
-                                    style: AppTextStyles.labelSm.copyWith(
-                                      fontSize: 10,
-                                      letterSpacing: 1.5,
-                                      fontWeight: FontWeight.w700,
-                                      color: AppColors.textWhite.withValues(alpha: 0.7),
-                                    ),
-                                  ),
-                                  Text(
-                                    'Sector 4-B',
-                                    style: AppTextStyles.bodySm.copyWith(
-                                      fontSize: 10,
-                                      color: AppColors.outline.withValues(alpha: 0.8),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-
-                            // Map Geographic Placemark Labels (Fort Kochi Basin)
-                            Positioned(
-                              bottom: 40,
-                              left: 18,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'FORT KOCHI',
-                                    style: AppTextStyles.labelMd.copyWith(
-                                      letterSpacing: 1.0,
-                                      fontWeight: FontWeight.w700,
-                                      color: AppColors.textWhite,
-                                    ),
-                                  ),
-                                  Text(
-                                    'Kochi Backwaters Basin',
-                                    style: AppTextStyles.bodySm.copyWith(
-                                      fontSize: 10,
-                                      color: AppColors.secondary.withValues(alpha: 0.8),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-
-                            // Center Radar Pin / Pinpoint Target Node
-                            Center(
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  // Tooltip Pill
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 10,
-                                      vertical: 4,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: AppColors.surfaceContainerHigh
-                                          .withValues(alpha: 0.95),
-                                      borderRadius: BorderRadius.circular(999),
-                                      boxShadow: const [
-                                        BoxShadow(
-                                          color: Color(0x66000000),
-                                          blurRadius: 8,
-                                        ),
-                                      ],
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Container(
-                                          width: 6,
-                                          height: 6,
-                                          decoration: const BoxDecoration(
-                                            shape: BoxShape.circle,
-                                            color: AppColors.primary,
-                                          ),
-                                        ),
-                                        const SizedBox(width: 6),
-                                        Text(
-                                          'You · Fort Kochi',
-                                          style: AppTextStyles.labelSm.copyWith(
-                                            color: AppColors.textWhite,
-                                            fontWeight: FontWeight.w700,
-                                            fontSize: 11,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  const SizedBox(height: 6),
-
-                                  // Animated Concentric Pulse
-                                  AnimatedBuilder(
-                                    animation: _pulseController,
-                                    builder: (context, child) {
-                                      final wave = _pulseController.value;
-                                      return SizedBox(
-                                        width: 48,
-                                        height: 48,
-                                        child: Stack(
-                                          alignment: Alignment.center,
-                                          children: [
-                                            // Outer pulse wave
-                                            Container(
-                                              width: 24 + (24 * wave),
-                                              height: 24 + (24 * wave),
-                                              decoration: BoxDecoration(
-                                                shape: BoxShape.circle,
-                                                color: AppColors.primaryContainer
-                                                    .withValues(
-                                                        alpha: 0.3 * (1 - wave)),
-                                              ),
-                                            ),
-                                            // Mid circle
-                                            Container(
-                                              width: 32,
-                                              height: 32,
-                                              decoration: BoxDecoration(
-                                                shape: BoxShape.circle,
-                                                color: AppColors.primaryContainer
-                                                    .withValues(alpha: 0.35),
-                                              ),
-                                            ),
-                                            // Inner core node
-                                            Container(
-                                              width: 16,
-                                              height: 16,
-                                              decoration: const BoxDecoration(
-                                                shape: BoxShape.circle,
-                                                color: AppColors.primaryContainer,
-                                                boxShadow: [
-                                                  BoxShadow(
-                                                    color: AppColors.primaryContainer,
-                                                    blurRadius: 10,
-                                                  ),
-                                                ],
-                                              ),
-                                              child: Center(
-                                                child: Container(
-                                                  width: 5,
-                                                  height: 5,
-                                                  decoration: const BoxDecoration(
-                                                    shape: BoxShape.circle,
-                                                    color: Colors.white,
-                                                  ),
-                                                ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                ],
+                                child: Text(
+                                  '${provider.currentLatitude.toStringAsFixed(4)}°N, ${provider.currentLongitude.toStringAsFixed(4)}°E',
+                                  style: const TextStyle(fontSize: 10, color: Color(0xFF94A3B8), fontWeight: FontWeight.w700),
+                                ),
                               ),
                             ),
 
@@ -451,48 +414,46 @@ class _ShareLocationScreenState extends State<ShareLocationScreen>
                                   width: 40,
                                   height: 40,
                                   decoration: BoxDecoration(
-                                    color: AppColors.surfaceContainerHigh
-                                        .withValues(alpha: 0.9),
+                                    color: const Color(0xFF0F172A).withOpacity(0.92),
                                     shape: BoxShape.circle,
-                                    boxShadow: const [
-                                      BoxShadow(
-                                        color: Color(0x66000000),
-                                        blurRadius: 8,
-                                      ),
-                                    ],
+                                    border: Border.all(color: const Color(0xFF38BDF8), width: 1.2),
+                                    boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 8)],
                                   ),
-                                  child: const Icon(
-                                    Icons.my_location,
-                                    color: AppColors.secondary,
-                                    size: 20,
-                                  ),
+                                  child: _isDetectingGps
+                                      ? const Padding(
+                                          padding: EdgeInsets.all(10),
+                                          child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF38BDF8)),
+                                        )
+                                      : const Icon(Icons.my_location, color: Color(0xFF38BDF8), size: 20),
                                 ),
                               ),
                             ),
 
-                            // Disclaimer Pill
+                            // Tap Hint Pill
                             Positioned(
                               bottom: 12,
                               left: 12,
                               child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 3,
-                                ),
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                                 decoration: BoxDecoration(
-                                  color: AppColors.surfaceContainerLowest
-                                      .withValues(alpha: 0.8),
-                                  borderRadius: BorderRadius.circular(4),
+                                  color: const Color(0xFF0F172A).withOpacity(0.92),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: AppColors.strokeBorder, width: 0.8),
                                 ),
-                                child: Text(
-                                  'Illustrative map · Not for navigation',
-                                  style: AppTextStyles.bodySm.copyWith(
-                                    fontSize: 10,
-                                    color: AppColors.outline,
-                                  ),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.touch_app, size: 12, color: Color(0xFF38BDF8)),
+                                    SizedBox(width: 4),
+                                    Text('Tap map to place emergency pin', style: TextStyle(fontSize: 9.5, color: Color(0xFFCBD5E1), fontWeight: FontWeight.w600)),
+                                  ],
                                 ),
                               ),
                             ),
+                          ],
+                        ),
+                      ),
+                    ),
                           ],
                         ),
                       ),
@@ -700,6 +661,10 @@ class _ShareLocationScreenState extends State<ShareLocationScreen>
                       height: 54,
                       child: ElevatedButton(
                         onPressed: () {
+                          final prov = context.read<RescueProvider>();
+                          if (_addressController.text.trim().isNotEmpty) {
+                            prov.setDraftAddress(_addressController.text.trim(), 'Uttarakhand');
+                          }
                           Navigator.of(context).push(
                             MaterialPageRoute(
                               builder: (_) => const AddReportDetailsScreen(),
@@ -711,7 +676,7 @@ class _ShareLocationScreenState extends State<ShareLocationScreen>
                           foregroundColor: Colors.white,
                           elevation: 4,
                           shadowColor:
-                              AppColors.primaryContainer.withValues(alpha: 0.4),
+                              AppColors.primaryContainer.withOpacity(0.4),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12),
                           ),
@@ -742,6 +707,46 @@ class _ShareLocationScreenState extends State<ShareLocationScreen>
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDistrictChip(String label, double lat, double lng, String fullAddr) {
+    final prov = context.watch<RescueProvider>();
+    final isSelected = prov.currentLocationName.contains(label.replaceFirst('📍 ', ''));
+    return InkWell(
+      onTap: () {
+        setState(() {
+          _addressController.text = fullAddr;
+        });
+        context.read<RescueProvider>().updateLocation(
+          locationName: label.replaceFirst('📍 ', '') + ', Uttarakhand',
+          address: fullAddr,
+          city: 'Uttarakhand',
+          latitude: lat,
+          longitude: lng,
+        );
+        _mapController.move(LatLng(lat, lng), 14.0);
+      },
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF0284C7).withOpacity(0.3) : AppColors.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isSelected ? const Color(0xFF38BDF8) : AppColors.outlineVariant,
+            width: isSelected ? 1.5 : 0.8,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            color: isSelected ? const Color(0xFF38BDF8) : AppColors.textWhite,
+          ),
         ),
       ),
     );

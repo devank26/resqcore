@@ -40,19 +40,23 @@ class _QuickSosDialogState extends State<QuickSosDialog>
     super.dispose();
   }
 
-  void _onDispatchSos() {
+  void _onDispatchSos() async {
     setState(() => _isDispatching = true);
 
-    Future.delayed(const Duration(milliseconds: 900), () {
+    try {
+      final req = await context.read<RescueProvider>().triggerQuickSos();
       if (mounted) {
-        final req = context.read<RescueProvider>().triggerQuickSos();
         setState(() {
           _isDispatching = false;
           _isDispatched = true;
           _sosId = req.id;
         });
       }
-    });
+    } catch (_) {
+      if (mounted) {
+        setState(() => _isDispatching = false);
+      }
+    }
   }
 
   @override
@@ -230,7 +234,7 @@ class _QuickSosDialogState extends State<QuickSosDialog>
               const SizedBox(height: 6),
 
               Text(
-                'Emergency dispatch ID: $_sosId\nRescue Zone 04 Command and speedboat unit Bravo 02 have been alerted.',
+                'Emergency dispatch ID: $_sosId\nCommand Center and Fast-Response Field SAR Units have been alerted with your live GPS location.',
                 style: AppTextStyles.bodySm.copyWith(
                   color: textSecondary,
                   height: 1.4,

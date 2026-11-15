@@ -27,6 +27,26 @@ class ChatMessage {
     this.isMe = false,
   });
 
+  factory ChatMessage.fromJson(Map<String, dynamic> json, {String currentUserName = ''}) {
+    final senderName = (json['sender'] ?? 'Operator').toString();
+    final isCurrentSelf = (json['isSelf'] == true) || (currentUserName.isNotEmpty && senderName.contains(currentUserName));
+
+    return ChatMessage(
+      id: (json['id'] ?? 'msg-${DateTime.now().millisecondsSinceEpoch}').toString(),
+      sender: senderName,
+      initials: (json['initials'] ?? (senderName.isNotEmpty ? senderName[0].toUpperCase() : 'OP')).toString(),
+      role: (json['role'] ?? 'Tactical Unit').toString(),
+      time: (json['time'] ?? 'Just now').toString(),
+      text: (json['text'] ?? '').toString(),
+      locationTag: json['locationTag'] as String?,
+      attachmentUrl: json['attachmentUrl'] as String?,
+      attachmentCoords: json['attachmentCoords'] as String?,
+      isAlert: json['isAlert'] == true,
+      isBot: json['isBot'] == true,
+      isMe: isCurrentSelf,
+    );
+  }
+
   static List<ChatMessage> mockMessages() {
     return [
       const ChatMessage(

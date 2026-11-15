@@ -59,6 +59,11 @@ class TacticalBottomNavigation extends StatelessWidget {
                 label: 'Shelters',
                 icon: Icons.night_shelter,
               ),
+              _buildNavItem(
+                index: 5,
+                label: 'Volunteers',
+                icon: Icons.volunteer_activism,
+              ),
             ],
           ),
         ),

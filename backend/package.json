@@ -1,0 +1,22 @@
+{
+  "name": "resqcore-backend",
+  "version": "1.0.0",
+  "description": "Unified Real-Time Backend for ResQCore Disaster Management Platform",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node test-integration.js",
+    "drill": "node live-platform-test.js"
+  },
+  "keywords": [
+    "disaster-management",
+    "realtime",
+    "resqcore",
+    "websocket",
+    "sse"
+  ],
+  "author": "ResQCore Engineering Team",
+  "license": "ISC"
+}

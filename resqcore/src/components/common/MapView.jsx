@@ -21,13 +21,19 @@ export const MapView = ({
   height = '100%',
   showDetailsOnClick = true,
   showHeatmap = false,
-  showFullControls = true
+  showFullControls = true,
+  incidents: propIncidents,
+  teams: propTeams,
+  showTeams = true,
+  filterMode = 'all'
 }) => {
   const {
     incidents,
     selectedIncidentId,
     setSelectedIncidentId,
     inspectIncident,
+    verifyIncident,
+    assignTeamToIncident,
     teams,
     isDemoMode,
     user
@@ -69,8 +75,9 @@ export const MapView = ({
   };
 
   // Strictly isolate Live Demo Mode: Demo mode keeps the original simulated Kerala map!
-  // Google Maps API is ONLY loaded in the real Command Center (!isDemoMode).
-  const shouldRenderGoogleMaps = !isDemoMode && useGoogleMaps && Boolean(googleApiKey);
+  // Google Maps loads whenever we have an API key — regardless of demo mode.
+  // This ensures the tactical map works in all modes when a key is configured.
+  const shouldRenderGoogleMaps = useGoogleMaps && Boolean(googleApiKey);
 
   return (
     <div
@@ -89,16 +96,23 @@ export const MapView = ({
       {shouldRenderGoogleMaps ? (
         <GoogleMapView
           apiKey={googleApiKey}
-          incidents={incidents}
-          teams={teams}
+          incidents={propIncidents || incidents}
+          teams={propTeams || teams}
           district={user?.district || 'Dehradun, Uttarakhand'}
           selectedIncidentId={selectedIncidentId}
           onSelectIncident={(id) => {
             setSelectedIncidentId(id);
             if (showDetailsOnClick) inspectIncident(id);
           }}
+          onVerifyIncident={verifyIncident}
+          onDispatchTeam={(incidentId) => {
+            const team = teams.find(t => t.id === 'alpha-01') || teams.find(t => t.status === 'Standby') || teams[0];
+            if (team) assignTeamToIncident(team.id, incidentId);
+          }}
           showHeatmap={showHeatmap}
           showFullControls={showFullControls}
+          showTeams={showTeams}
+          filterMode={filterMode}
           onOpenKeyModal={() => setShowKeyModal(true)}
         />
       ) : (

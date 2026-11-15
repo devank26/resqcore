@@ -9,6 +9,9 @@
         android:label="ResQCore"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="AIzaSyAMaBxMmCY1r2TmqoMZUm2-v8FfhE1n44g"/>
         <activity
             android:name=".MainActivity"
             android:exported="true"

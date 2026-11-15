@@ -11,6 +11,7 @@ import 'screens/teams_screen.dart';
 import 'screens/shelters_screen.dart';
 import 'screens/tactical_chat_screen.dart';
 import 'screens/emergency_sos_screen.dart';
+import 'screens/volunteers_screen.dart';
 import 'widgets/tactical_bottom_navigation.dart';
 import 'widgets/report_incident_dialog.dart';
 
@@ -209,6 +210,10 @@ class _MainShellScreenState extends State<MainShellScreen> {
             appState: widget.appState,
             onSosPressed: _openSosScreen,
             onAirEvacPressed: _openSosScreen,
+          ),
+          VolunteersScreen(
+            appState: widget.appState,
+            onSosPressed: _openSosScreen,
           ),
         ];
 

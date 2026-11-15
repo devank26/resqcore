@@ -1,10 +1,22 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
 import '../models/hazard_zone.dart';
 import '../models/rescue_team.dart';
 import '../providers/rescue_provider.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text_styles.dart';
+import 'dialogs/location_selector_dialog.dart';
+
+// Default center: Dehradun, Uttarakhand (operational theater)
+const LatLng _kDefaultCenter = LatLng(30.3165, 78.0322);
+const double _kDefaultZoom = 13.0;
+const String _kGoogleMapsApiKey = 'AIzaSyAMaBxMmCY1r2TmqoMZUm2-v8FfhE1n44g';
+
+
 
 class LiveMapScreen extends StatefulWidget {
   const LiveMapScreen({super.key});
@@ -17,7 +29,168 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   int _selectedFilter = 0; // 0: All, 1: Hazards, 2: Rescue Teams
   RescueTeam? _selectedTeam;
   HazardZone? _selectedHazard;
-  bool _isOverwatchRadar = true;
+  bool _isOverwatchRadar = true; // true = Esri Satellite (default high-contrast), false = OpenStreetMap
+
+  final MapController _mapController = MapController();
+  LatLng? _myLocation;
+  StreamSubscription<Position>? _positionStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _initLocation();
+  }
+
+  @override
+  void dispose() {
+    _positionStream?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _initLocation() async {
+    final prov = context.read<RescueProvider>();
+    // Immediate fallback so the map and marker always initialize without delay
+    if (mounted) {
+      setState(() => _myLocation = LatLng(prov.currentLatitude, prov.currentLongitude));
+    }
+
+    try {
+      final pos = await prov.acquireLivePosition(timeout: const Duration(seconds: 3));
+      if (pos != null && mounted) {
+        setState(() => _myLocation = LatLng(pos.latitude, pos.longitude));
+        _mapController.move(_myLocation!, _kDefaultZoom);
+      }
+    } catch (_) {}
+
+    try {
+      _positionStream = Geolocator.getPositionStream(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 15,
+        ),
+      ).listen((pos) {
+        if (mounted) {
+          setState(() => _myLocation = LatLng(pos.latitude, pos.longitude));
+        }
+      });
+    } catch (_) {}
+  }
+
+  List<Marker> _buildHazardMarkers(List<HazardZone> hazards) {
+    return hazards.map((h) {
+      return Marker(
+        point: LatLng(h.latitude, h.longitude),
+        width: 40,
+        height: 40,
+        child: GestureDetector(
+          onTap: () => setState(() {
+            _selectedHazard = h;
+            _selectedTeam = null;
+          }),
+          child: Container(
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: h.severity.color.withOpacity(0.9),
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 1.5),
+              boxShadow: [
+                BoxShadow(
+                  color: h.severity.color.withOpacity(0.5),
+                  blurRadius: 8,
+                ),
+              ],
+            ),
+            child: const Icon(Icons.warning, size: 16, color: Colors.white),
+          ),
+        ),
+      );
+    }).toList();
+  }
+
+  List<Marker> _buildTeamMarkers(List<RescueTeam> teams) {
+    const teamColors = [Color(0xFF2563EB), Color(0xFF059669), Color(0xFFD97706)];
+    return List.generate(teams.length, (i) {
+      final t = teams[i];
+      final color = teamColors[i % teamColors.length];
+
+      return Marker(
+        point: LatLng(t.latitude, t.longitude),
+        width: 36,
+        height: 36,
+        child: GestureDetector(
+          onTap: () => setState(() {
+            _selectedTeam = t;
+            _selectedHazard = null;
+          }),
+          child: Container(
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 1.5),
+              boxShadow: const [
+                BoxShadow(color: Color(0x66000000), blurRadius: 6),
+              ],
+            ),
+            child: Icon(t.icon, size: 14, color: Colors.white),
+          ),
+        ),
+      );
+    });
+  }
+
+  Marker? _buildMyMarker() {
+    if (_myLocation == null) return null;
+    return Marker(
+      point: _myLocation!,
+      width: 60,
+      height: 72,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceContainerHigh.withOpacity(0.9),
+              borderRadius: BorderRadius.circular(999),
+              boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 4)],
+            ),
+            child: Text(
+              'You',
+              style: AppTextStyles.labelSm.copyWith(
+                color: Colors.white,
+                fontSize: 9,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          const SizedBox(height: 2),
+          Container(
+            width: 16,
+            height: 16,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: AppColors.primaryContainer.withOpacity(0.3),
+              border: Border.all(color: AppColors.primaryContainer, width: 2),
+              boxShadow: [
+                BoxShadow(color: AppColors.primaryContainer.withOpacity(0.5), blurRadius: 10, spreadRadius: 2),
+              ],
+            ),
+            child: Center(
+              child: Container(
+                width: 6,
+                height: 6,
+                decoration: const BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: AppColors.primaryContainer,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -31,6 +204,16 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     final textPrimary = isDark ? AppColors.textWhite : const Color(0xFF0F172A);
     final textSecondary = isDark ? AppColors.textSecondary : const Color(0xFF64748B);
     final borderColor = isDark ? AppColors.strokeBorder : const Color(0xFFE2E8F0);
+
+    final hazardMarkers = _buildHazardMarkers(hazards);
+    final teamMarkers = _buildTeamMarkers(teams);
+    final myMarker = _buildMyMarker();
+
+    final allMarkers = [
+      ...hazardMarkers,
+      ...teamMarkers,
+      if (myMarker != null) myMarker,
+    ];
 
     return Scaffold(
       backgroundColor: bgColor,
@@ -48,6 +231,34 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
             fontWeight: FontWeight.w700,
           ),
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.edit_location_alt, color: Color(0xFF38BDF8)),
+            tooltip: 'Change Operational Location',
+            onPressed: () async {
+              await LocationSelectorDialog.show(context);
+              if (mounted) {
+                final prov = context.read<RescueProvider>();
+                _mapController.move(LatLng(prov.currentLatitude, prov.currentLongitude), _kDefaultZoom);
+              }
+            },
+          ),
+          IconButton(
+            icon: Icon(
+              _myLocation != null ? Icons.gps_fixed : Icons.gps_not_fixed,
+              color: _myLocation != null ? AppColors.primaryContainer : textSecondary,
+            ),
+            onPressed: () {
+              if (_myLocation != null) {
+                _mapController.move(_myLocation!, _kDefaultZoom);
+              } else {
+                final prov = context.read<RescueProvider>();
+                _mapController.move(LatLng(prov.currentLatitude, prov.currentLongitude), _kDefaultZoom);
+              }
+            },
+            tooltip: 'Center on location',
+          ),
+        ],
       ),
       body: SafeArea(
         child: Column(
@@ -56,20 +267,55 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               color: cardBg,
-              child: Row(
-                children: [
-                  _buildFilterChip('All Units & Hazards', 0),
-                  const SizedBox(width: 8),
-                  _buildFilterChip('🚨 Hazard Zones', 1),
-                  const SizedBox(width: 8),
-                  _buildFilterChip('🚤 Rescue Teams', 2),
-                ],
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    _buildFilterChip('All Units & Hazards', 0),
+                    const SizedBox(width: 8),
+                    _buildFilterChip('🚨 Hazard Zones', 1),
+                    const SizedBox(width: 8),
+                    _buildFilterChip('🚤 Rescue Teams', 2),
+                    const SizedBox(width: 8),
+                    // Tile layer toggle
+                    GestureDetector(
+                      onTap: () => setState(() => _isOverwatchRadar = !_isOverwatchRadar),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.transparent,
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(color: AppColors.outlineVariant, width: 1),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              _isOverwatchRadar ? Icons.satellite_alt : Icons.map_outlined,
+                              size: 13,
+                              color: AppColors.textSecondary,
+                            ),
+                            const SizedBox(width: 5),
+                            Text(
+                              _isOverwatchRadar ? 'Google Satellite' : 'Google Map',
+                              style: AppTextStyles.labelSm.copyWith(
+                                color: AppColors.textSecondary,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                ),
               ),
             ),
 
-            // Tactical Map Container
+            // Real Interactive Map
             Container(
-              height: 240,
+              height: 260,
               width: double.infinity,
               margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               decoration: BoxDecoration(
@@ -81,223 +327,74 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                 borderRadius: BorderRadius.circular(16),
                 child: Stack(
                   children: [
-                    // Base Map Imagery: Radar Recon vs Vector Night Map
-                    Positioned.fill(
-                      child: Image.asset(
-                        _isOverwatchRadar
-                            ? 'assets/images/scenarios/command_radar_dispatch.png'
-                            : 'assets/images/map_dark.png',
-                        fit: BoxFit.cover,
-                        errorBuilder: (context, error, stackTrace) => Container(
-                          color: const Color(0xFF101927),
-                          child: const Center(
-                            child: Icon(Icons.map, size: 64, color: AppColors.outline),
-                          ),
-                        ),
+                    FlutterMap(
+                      mapController: _mapController,
+                      options: MapOptions(
+                        initialCenter: LatLng(provider.currentLatitude, provider.currentLongitude),
+                        initialZoom: _kDefaultZoom,
+                        minZoom: 5,
+                        maxZoom: 18,
                       ),
+                      children: [
+                        TileLayer(
+                          urlTemplate: _isOverwatchRadar
+                              ? 'https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&key=$_kGoogleMapsApiKey'
+                              : 'https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&key=$_kGoogleMapsApiKey',
+                          subdomains: const ['0', '1', '2', '3'],
+                          userAgentPackageName: 'com.example.rescue_core',
+                          maxZoom: 20,
+                        ),
+                        // Tactical Sectors Polygon Layer removed
+                        MarkerLayer(markers: [
+                          ...allMarkers,
+                        ]),
+                      ],
                     ),
 
-                    // Nocturnal Overlay
-                    Positioned.fill(
-                      child: Container(
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.bottomCenter,
-                            end: Alignment.topCenter,
-                            colors: [
-                              AppColors.surfaceContainerLowest.withValues(alpha: 0.65),
-                              Colors.transparent,
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-
-                    // Layer Switcher (Tactical Radar / Vector)
-                    Positioned(
-                      top: 10,
-                      right: 10,
-                      child: InkWell(
-                        onTap: () => setState(() => _isOverwatchRadar = !_isOverwatchRadar),
-                        borderRadius: BorderRadius.circular(8),
+                    // GPS live badge
+                    if (_myLocation != null)
+                      Positioned(
+                        top: 10,
+                        left: 10,
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF0F172A).withValues(alpha: 0.85),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                              color: _isOverwatchRadar
-                                  ? AppColors.tertiary
-                                  : AppColors.primaryContainer,
-                              width: 1,
-                            ),
-                            boxShadow: const [
-                              BoxShadow(color: Color(0x66000000), blurRadius: 4),
-                            ],
+                            color: const Color(0xFF0F172A).withOpacity(0.85),
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(color: AppColors.primaryContainer.withOpacity(0.5)),
                           ),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(
-                                _isOverwatchRadar ? Icons.radar : Icons.map_outlined,
-                                size: 13,
-                                color: _isOverwatchRadar
-                                    ? AppColors.tertiary
-                                    : AppColors.primary,
+                              Container(
+                                width: 6, height: 6,
+                                decoration: const BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: Color(0xFF34D399),
+                                ),
                               ),
                               const SizedBox(width: 5),
                               Text(
-                                _isOverwatchRadar ? 'RADAR RECON' : 'VECTOR MAP',
+                                'GPS LIVE',
                                 style: AppTextStyles.labelSm.copyWith(
-                                  color: Colors.white,
-                                  fontSize: 9,
+                                  color: const Color(0xFF6EE7B7),
+                                  fontSize: 10,
                                   fontWeight: FontWeight.w700,
-                                  letterSpacing: 0.5,
                                 ),
                               ),
                             ],
                           ),
                         ),
                       ),
-                    ),
 
-                    // User Location Pin
-                    Positioned(
-                      top: 110,
-                      left: 170,
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                            decoration: BoxDecoration(
-                              color: AppColors.surfaceContainerHigh.withValues(alpha: 0.9),
-                              borderRadius: BorderRadius.circular(999),
-                              boxShadow: const [
-                                BoxShadow(color: Color(0x66000000), blurRadius: 4),
-                              ],
-                            ),
-                            child: Text(
-                              'You · Fort Kochi',
-                              style: AppTextStyles.labelSm.copyWith(
-                                color: Colors.white,
-                                fontSize: 9,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Container(
-                            width: 14,
-                            height: 14,
-                            decoration: const BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: AppColors.primaryContainer,
-                              boxShadow: [
-                                BoxShadow(color: AppColors.primaryContainer, blurRadius: 8),
-                              ],
-                            ),
-                            child: Center(
-                              child: Container(
-                                width: 5,
-                                height: 5,
-                                decoration: const BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    // Bravo 02 Unit Pin
-                    Positioned(
-                      top: 70,
-                      left: 110,
-                      child: InkWell(
-                        onTap: () {
-                          setState(() {
-                            _selectedTeam = teams[0];
-                            _selectedHazard = null;
-                          });
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.all(6),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF2563EB),
-                            shape: BoxShape.circle,
-                            boxShadow: const [
-                              BoxShadow(color: Color(0x66000000), blurRadius: 6),
-                            ],
-                            border: Border.all(color: Colors.white, width: 1.5),
-                          ),
-                          child: const Icon(Icons.directions_boat, size: 14, color: Colors.white),
-                        ),
-                      ),
-                    ),
-
-                    // Delta 04 Unit Pin
-                    Positioned(
-                      bottom: 60,
-                      right: 120,
-                      child: InkWell(
-                        onTap: () {
-                          setState(() {
-                            _selectedTeam = teams[1];
-                            _selectedHazard = null;
-                          });
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.all(6),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF059669),
-                            shape: BoxShape.circle,
-                            boxShadow: const [
-                              BoxShadow(color: Color(0x66000000), blurRadius: 6),
-                            ],
-                            border: Border.all(color: Colors.white, width: 1.5),
-                          ),
-                          child: const Icon(Icons.engineering, size: 14, color: Colors.white),
-                        ),
-                      ),
-                    ),
-
-                    // Hazard Zone 1 Pin
-                    Positioned(
-                      top: 80,
-                      right: 100,
-                      child: InkWell(
-                        onTap: () {
-                          setState(() {
-                            _selectedHazard = hazards[0];
-                            _selectedTeam = null;
-                          });
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.all(6),
-                          decoration: BoxDecoration(
-                            color: AppColors.error,
-                            shape: BoxShape.circle,
-                            border: Border.all(color: Colors.white, width: 1.5),
-                            boxShadow: const [
-                              BoxShadow(color: Color(0x66EF4444), blurRadius: 8),
-                            ],
-                          ),
-                          child: const Icon(Icons.warning, size: 14, color: Colors.white),
-                        ),
-                      ),
-                    ),
-
-                    // Legend Overlay
+                    // Legend overlay
                     Positioned(
                       bottom: 8,
                       left: 10,
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                         decoration: BoxDecoration(
-                          color: AppColors.surfaceContainerLowest.withValues(alpha: 0.85),
+                          color: AppColors.surfaceContainerLowest.withOpacity(0.85),
                           borderRadius: BorderRadius.circular(6),
                         ),
                         child: Row(
@@ -305,12 +402,26 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                           children: [
                             Container(width: 8, height: 8, decoration: const BoxDecoration(shape: BoxShape.circle, color: Color(0xFF2563EB))),
                             const SizedBox(width: 4),
-                            Text('Rescue Unit', style: AppTextStyles.labelSm.copyWith(fontSize: 10, color: Colors.white)),
+                            Text('Rescue', style: AppTextStyles.labelSm.copyWith(fontSize: 10, color: Colors.white)),
                             const SizedBox(width: 8),
                             Container(width: 8, height: 8, decoration: const BoxDecoration(shape: BoxShape.circle, color: AppColors.error)),
                             const SizedBox(width: 4),
-                            Text('Hazard Area', style: AppTextStyles.labelSm.copyWith(fontSize: 10, color: Colors.white)),
+                            Text('Hazard', style: AppTextStyles.labelSm.copyWith(fontSize: 10, color: Colors.white)),
                           ],
+                        ),
+                      ),
+                    ),
+
+                    // Attribution
+                    Positioned(
+                      bottom: 0,
+                      right: 0,
+                      child: Container(
+                        color: Colors.black38,
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                        child: const Text(
+                          '© Google Maps',
+                          style: TextStyle(fontSize: 8, color: Colors.white70),
                         ),
                       ),
                     ),
@@ -329,7 +440,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                       margin: const EdgeInsets.only(bottom: 12),
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF2563EB).withValues(alpha: 0.15),
+                        color: const Color(0xFF2563EB).withOpacity(0.15),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(color: const Color(0xFF2563EB), width: 1),
                       ),
@@ -360,7 +471,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                       margin: const EdgeInsets.only(bottom: 12),
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
-                        color: AppColors.errorContainer.withValues(alpha: 0.2),
+                        color: AppColors.errorContainer.withOpacity(0.2),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(color: AppColors.error, width: 1),
                       ),
@@ -459,10 +570,10 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
       decoration: BoxDecoration(
         color: cardBg,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: h.severity.color.withValues(alpha: 0.35), width: 1),
+        border: Border.all(color: h.severity.color.withOpacity(0.35), width: 1),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.2),
+            color: Colors.black.withOpacity(0.2),
             blurRadius: 6,
             offset: const Offset(0, 2),
           ),
@@ -483,17 +594,14 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                     Image.asset(
                       h.imagePath!,
                       fit: BoxFit.cover,
-                      errorBuilder: (_, _, _) => const SizedBox(),
+                      errorBuilder: (_, __, ___) => const SizedBox(),
                     ),
                     Container(
                       decoration: BoxDecoration(
                         gradient: LinearGradient(
                           begin: Alignment.topCenter,
                           end: Alignment.bottomCenter,
-                          colors: [
-                            Colors.transparent,
-                            cardBg.withValues(alpha: 0.95),
-                          ],
+                          colors: [Colors.transparent, cardBg.withOpacity(0.95)],
                         ),
                       ),
                     ),
@@ -511,12 +619,9 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                         decoration: BoxDecoration(
-                          color: h.severity.color.withValues(alpha: 0.15),
+                          color: h.severity.color.withOpacity(0.15),
                           borderRadius: BorderRadius.circular(6),
-                          border: Border.all(
-                            color: h.severity.color.withValues(alpha: 0.3),
-                            width: 1,
-                          ),
+                          border: Border.all(color: h.severity.color.withOpacity(0.3), width: 1),
                         ),
                         child: Text(
                           h.severity.label,
@@ -534,15 +639,9 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  Text(
-                    h.name,
-                    style: AppTextStyles.labelLg.copyWith(color: textPrimary, fontWeight: FontWeight.w700),
-                  ),
+                  Text(h.name, style: AppTextStyles.labelLg.copyWith(color: textPrimary, fontWeight: FontWeight.w700)),
                   const SizedBox(height: 4),
-                  Text(
-                    h.description,
-                    style: AppTextStyles.bodySm.copyWith(color: textSecondary, height: 1.35),
-                  ),
+                  Text(h.description, style: AppTextStyles.bodySm.copyWith(color: textSecondary, height: 1.35)),
                 ],
               ),
             ),
@@ -575,15 +674,15 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
               width: 50,
               height: 50,
               decoration: BoxDecoration(
-                color: AppColors.primaryContainer.withValues(alpha: 0.15),
+                color: AppColors.primaryContainer.withOpacity(0.15),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: AppColors.primaryContainer.withValues(alpha: 0.3)),
+                border: Border.all(color: AppColors.primaryContainer.withOpacity(0.3)),
               ),
               child: t.imagePath != null
                   ? Image.asset(
                       t.imagePath!,
                       fit: BoxFit.cover,
-                      errorBuilder: (_, _, _) => Icon(t.icon, color: AppColors.primaryContainer, size: 22),
+                      errorBuilder: (_, __, ___) => Icon(t.icon, color: AppColors.primaryContainer, size: 22),
                     )
                   : Icon(t.icon, color: AppColors.primaryContainer, size: 22),
             ),
@@ -599,17 +698,14 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                     Flexible(
                       child: Text(
                         t.name,
-                        style: AppTextStyles.labelMd.copyWith(
-                          color: textPrimary,
-                          fontWeight: FontWeight.w700,
-                        ),
+                        style: AppTextStyles.labelMd.copyWith(color: textPrimary, fontWeight: FontWeight.w700),
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                       decoration: BoxDecoration(
-                        color: t.status.color.withValues(alpha: 0.15),
+                        color: t.status.color.withOpacity(0.15),
                         borderRadius: BorderRadius.circular(999),
                       ),
                       child: Text(
@@ -624,10 +720,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                   ],
                 ),
                 const SizedBox(height: 2),
-                Text(
-                  t.currentSector,
-                  style: AppTextStyles.bodySm.copyWith(color: textSecondary, fontSize: 11),
-                ),
+                Text(t.currentSector, style: AppTextStyles.bodySm.copyWith(color: textSecondary, fontSize: 11)),
                 const SizedBox(height: 2),
                 Text(
                   'E.T.A: ${t.eta} • ${t.type}',
