@@ -33,29 +33,26 @@ class _AddReportDetailsScreenState extends State<AddReportDetailsScreen> {
     super.dispose();
   }
 
-  void _onSubmitReport() {
-    setState(() {
-      _isSubmitting = true;
-    });
+  Future<void> _onSubmitReport() async {
+    setState(() => _isSubmitting = true);
+    final provider = context.read<RescueProvider>();
+    provider.setDraftDescription(_descController.text);
+    provider.setDraftContact(_contactController.text);
 
-    Future.delayed(const Duration(milliseconds: 700), () {
-      if (mounted) {
-        final provider = context.read<RescueProvider>();
-        provider.setDraftDescription(_descController.text);
-        provider.setDraftContact(_contactController.text);
-        provider.submitDraftReport();
-
-        setState(() {
-          _isSubmitting = false;
-        });
-
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (_) => const ReportSubmissionSuccessScreen(),
-          ),
-        );
-      }
-    });
+    try {
+      await provider.submitDraftReport();
+      if (!mounted) return;
+      setState(() => _isSubmitting = false);
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const ReportSubmissionSuccessScreen()),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _isSubmitting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error.toString().replaceFirst('Bad state: ', ''))),
+      );
+    }
   }
 
   @override

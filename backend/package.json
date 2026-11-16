@@ -18,5 +18,8 @@
     "sse"
   ],
   "author": "ResQCore Engineering Team",
-  "license": "ISC"
+  "license": "ISC",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.119.0"
+  }
 }

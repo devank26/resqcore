@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'incident.dart';
 import 'team_member.dart';
 import 'chat_message.dart';
@@ -11,6 +12,7 @@ class AppState extends ChangeNotifier {
   String _userRole = 'Commander';
   String _userName = 'Devank (HQ Commander)';
   String _userPhone = '+91 98110 44201';
+  String _teamId = '';
   bool _isAuthenticated = false;
   bool _isDemoMode = false;
   int _activeTabIndex = 0;
@@ -19,7 +21,6 @@ class AppState extends ChangeNotifier {
 
   // Live GPS telemetry & chat sync timers
   Timer? _telemetryTimer;
-  Timer? _chatSyncTimer;
   double _currentLat = 30.5593;
   double _currentLng = 79.5644;
   int _currentBattery = 85;
@@ -50,13 +51,14 @@ class AppState extends ChangeNotifier {
   List<Shelter> get shelters => _shelters;
   List<Evacuee> get evacuees => _evacuees;
 
-  int get affectedTotal => 247;
+  int get affectedTotal => _incidents.fold(0, (total, incident) => total + incident.affectedCount);
   int get rescuedTotal => _evacuees.where((e) => e.status == 'Rescued').length * 47 + 1;
   int get missingTotal => _evacuees.where((e) => e.status == 'Missing').length * 7;
 
   // Actions
   void setDemoRole(String role, String phone, String name) {
     _userRole = role;
+    _teamId = '';
     _userPhone = phone;
     _userName = name;
     _isAuthenticated = true;
@@ -64,23 +66,32 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  void login(String role, String phone) {
+  void loginLive({required String role, required String teamId, required String email, required String name}) {
     _userRole = role;
-    _userPhone = phone;
-    _userName = role == 'Civilian' ? 'Citizen Distress User' : 'Field Operative Devank';
+    _teamId = teamId;
+    _userPhone = email;
+    _userName = name;
     _isAuthenticated = true;
     _isDemoMode = false;
+    _incidents = [];
+    _teams = [];
+    _messages = [];
+    _shelters = [];
+    _evacuees = [];
     _initBackendSync();
     notifyListeners();
   }
 
   void logout() {
+    final wasLive = !_isDemoMode;
     _isAuthenticated = false;
     _isDemoMode = false;
+    _teamId = '';
+    if (wasLive) {
+      try { Supabase.instance.client.auth.signOut(); } catch (_) {}
+    }
     _telemetryTimer?.cancel();
     _telemetryTimer = null;
-    _chatSyncTimer?.cancel();
-    _chatSyncTimer = null;
     TacticalSyncService.disconnectRealtime();
     notifyListeners();
   }
@@ -113,7 +124,7 @@ class AppState extends ChangeNotifier {
       // Dispatch immediately with best available GPS
       Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high).then((pos) {
         TacticalSyncService.triggerSos(
-          teamId: _userRole.toLowerCase().replaceAll(' ', '-'),
+          teamId: _teamId,
           teamName: _userRole,
           operatorName: _userName,
           location: 'GPS: ${pos.latitude.toStringAsFixed(4)}°N, ${pos.longitude.toStringAsFixed(4)}°E',
@@ -123,7 +134,7 @@ class AppState extends ChangeNotifier {
         );
       }).catchError((_) {
         TacticalSyncService.triggerSos(
-          teamId: _userRole.toLowerCase().replaceAll(' ', '-'),
+          teamId: _teamId,
           teamName: _userRole,
           operatorName: _userName,
           location: 'Dehradun / Joshimath Sector',
@@ -226,101 +237,42 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // --- Real-Time Backend Synchronization ---
+  // --- Realtime backend synchronization ---
   Future<void> _initBackendSync() async {
-    if (_isDemoMode) return;
+    if (_isDemoMode || _teamId.isEmpty) return;
 
-    // 1. Initial Incidents Fetch
     try {
       final remoteIncidents = await TacticalSyncService.fetchIncidents();
-      if (remoteIncidents.isNotEmpty) {
-        final List<Incident> parsed = [];
-        final existingIds = _incidents.map((i) => i.id).toSet();
-
-        for (final item in remoteIncidents) {
-          final inc = Incident.fromJson(item);
-          if (!existingIds.contains(inc.id)) {
-            parsed.add(inc);
-            existingIds.add(inc.id);
-          } else {
-            // Update existing status
-            final idx = _incidents.indexWhere((i) => i.id == inc.id);
-            if (idx != -1) {
-              _incidents[idx] = inc;
-            }
-          }
-        }
-        _incidents = [...parsed, ..._incidents];
-        notifyListeners();
-      }
-    } catch (e) {
-      print('[RescueApp Sync] Incidents sync error: $e');
+      _incidents = remoteIncidents.map(Incident.fromJson).toList();
+      final remoteTeams = await TacticalSyncService.fetchTeams();
+      _teams = remoteTeams.map(RescueTeam.fromJson).toList();
+      final remoteShelters = await TacticalSyncService.fetchShelters();
+      _shelters = remoteShelters.map((row) => Shelter(
+        id: (row['id'] ?? '').toString(),
+        name: (row['name'] ?? 'Shelter').toString(),
+        location: (row['location'] ?? '').toString(),
+        capacity: (row['capacity'] as num?)?.toInt() ?? 0,
+        occupied: (row['occupied'] as num?)?.toInt() ?? 0,
+        distance: '',
+        amenities: '',
+      )).toList();
+      final remoteMessages = await TacticalSyncService.fetchChatMessages(channel: 'team:$_teamId');
+      _messages = remoteMessages.map((row) => ChatMessage.fromJson(row, currentUserName: _userName)).toList();
+      notifyListeners();
+    } catch (error) {
+      debugPrint('[RescueApp Sync] Initial data sync failed: $error');
     }
 
-    // 2. Initial Chat Messages Fetch
-    try {
-      final remoteMsgs = await TacticalSyncService.fetchChatMessages();
-      if (remoteMsgs.isNotEmpty) {
-        final existingIds = _messages.map((m) => m.id).toSet();
-        final List<ChatMessage> parsed = [];
-
-        for (final item in remoteMsgs) {
-          final msg = ChatMessage.fromJson(item, currentUserName: _userName);
-          if (!existingIds.contains(msg.id)) {
-            parsed.add(msg);
-            existingIds.add(msg.id);
-          }
-        }
-        _messages = [..._messages, ...parsed];
-        notifyListeners();
-      }
-    } catch (e) {
-      print('[RescueApp Sync] Chat sync error: $e');
-    }
-
-    // 3. Connect Real-Time WebSocket Event Stream
     TacticalSyncService.connectRealtime(
-      teamId: _userRole.toLowerCase().replaceAll(' ', '-'),
+      teamId: _teamId,
       role: _userRole,
       name: _userName,
-      onEvent: (event) {
-        _handleRealtimeEvent(event);
-      },
+      onEvent: _handleRealtimeEvent,
     );
 
-    // 4. Start GPS telemetry loop — sends real position to backend every 30s
     _telemetryTimer?.cancel();
     _telemetryTimer = Timer.periodic(const Duration(seconds: 30), (_) => _sendGpsTelemetry());
-    _sendGpsTelemetry(); // Send immediately on connect
-
-    // 5. Start real-time chat background sync loop (every 5 seconds)
-    _chatSyncTimer?.cancel();
-    _chatSyncTimer = Timer.periodic(const Duration(seconds: 5), (_) => _syncChatMessages());
-  }
-
-  /// Syncs chat messages periodically from the backend for guaranteed real-time delivery
-  Future<void> _syncChatMessages() async {
-    if (_isDemoMode || !_isAuthenticated) return;
-    try {
-      final remoteMsgs = await TacticalSyncService.fetchChatMessages();
-      if (remoteMsgs.isNotEmpty) {
-        bool changed = false;
-        for (final item in remoteMsgs) {
-          final msg = ChatMessage.fromJson(item, currentUserName: _userName);
-          final exists = _messages.any((m) =>
-            m.id == msg.id ||
-            (m.isMe && m.text == msg.text && (m.sender == msg.sender || msg.sender.contains(m.sender)))
-          );
-          if (!exists) {
-            _messages.add(msg);
-            changed = true;
-          }
-        }
-        if (changed) {
-          notifyListeners();
-        }
-      }
-    } catch (_) {}
+    _sendGpsTelemetry();
   }
 
   void _handleRealtimeEvent(Map<String, dynamic> event) {
@@ -328,6 +280,28 @@ class AppState extends ChangeNotifier {
 
     final eventType = event['event']?.toString() ?? event['type']?.toString();
     final data = (event['data'] ?? event) as Map<String, dynamic>;
+
+    if (eventType == 'incidents_sync') {
+      final rows = data['incidents'];
+      if (rows is List) {
+        _incidents = rows.map((row) => Incident.fromJson(Map<String, dynamic>.from(row as Map))).toList();
+        notifyListeners();
+      }
+      return;
+    }
+
+    if (eventType == 'chat_sync') {
+      final rows = data['messages'];
+      if (rows is List) {
+        final existingIds = _messages.map((message) => message.id).toSet();
+        for (final raw in rows) {
+          final message = ChatMessage.fromJson(Map<String, dynamic>.from(raw as Map), currentUserName: _userName);
+          if (!existingIds.contains(message.id)) _messages.add(message);
+        }
+        notifyListeners();
+      }
+      return;
+    }
 
     if (eventType == 'new_citizen_sos' || eventType == 'incident_reported') {
       try {
@@ -566,7 +540,7 @@ class AppState extends ChangeNotifier {
       }
 
       await TacticalSyncService.sendTelemetry(
-        teamId: _userRole.toLowerCase().replaceAll(' ', '-'),
+        teamId: _teamId,
         lat: pos.latitude,
         lng: pos.longitude,
         battery: _currentBattery,
@@ -577,7 +551,7 @@ class AppState extends ChangeNotifier {
       // GPS unavailable — send last known coordinates
       try {
         await TacticalSyncService.sendTelemetry(
-          teamId: _userRole.toLowerCase().replaceAll(' ', '-'),
+          teamId: _teamId,
           lat: _currentLat,
           lng: _currentLng,
           battery: _currentBattery,

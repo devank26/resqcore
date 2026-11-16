@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'theme/tactical_theme.dart';
 import 'models/app_state.dart';
 import 'models/incident.dart';
@@ -15,8 +16,13 @@ import 'screens/volunteers_screen.dart';
 import 'widgets/tactical_bottom_navigation.dart';
 import 'widgets/report_incident_dialog.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  const supabaseUrl = String.fromEnvironment('SUPABASE_URL');
+  const publishableKey = String.fromEnvironment('SUPABASE_PUBLISHABLE_KEY');
+  if (supabaseUrl.isNotEmpty && publishableKey.isNotEmpty) {
+    await Supabase.initialize(url: supabaseUrl, publishableKey: publishableKey);
+  }
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,

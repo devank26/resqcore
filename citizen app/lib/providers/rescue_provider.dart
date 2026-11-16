@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/emergency_type.dart';
 import '../models/emergency_request.dart';
 import '../models/hazard_zone.dart';
@@ -7,12 +10,25 @@ import '../models/rescue_team.dart';
 import '../models/safety_guide.dart';
 import '../models/user_profile.dart';
 import '../services/command_center_service.dart';
-import '../services/google_sign_in_service.dart';
 import '../services/account_storage_service.dart';
 
 class RescueProvider extends ChangeNotifier {
   RescueProvider() {
     initLocationTracking();
+    CommandCenterService.watchPublicAlerts(_receivePublicAlert);
+    CommandCenterService.fetchAlerts().then((alerts) {
+      if (!_isDemoMode && alerts.isNotEmpty) {
+        _liveAlerts = alerts;
+        notifyListeners();
+      }
+    });
+  }
+
+  void _receivePublicAlert(Map<String, dynamic> alert) {
+    if (_isDemoMode) return;
+    final id = (alert['id'] ?? '').toString();
+    _liveAlerts = [alert, ..._liveAlerts.where((item) => item['id']?.toString() != id)];
+    notifyListeners();
   }
 
   /// Safely & quickly acquire live GPS coordinates with fallback chain:
@@ -97,7 +113,7 @@ class RescueProvider extends ChangeNotifier {
 
   // Authentication & Session
   bool _isLoggedIn = false;
-  String _authMethod = 'phone'; // 'phone' | 'email'
+  String _authMethod = 'email';
   String _phoneNumber = '';
   String _email = '';
   final List<String> _otpDigits = ['', '', '', '', '', ''];
@@ -142,12 +158,13 @@ class RescueProvider extends ChangeNotifier {
   double? _draftLongitude = 78.0322;
   String _draftDescription =
       'Flash flood waters rising near Alaknanda gorge. Multiple families require extraction assistance.';
-  String _draftContact = '+91 98470 21836';
+  String _draftContact = '';
   bool _draftConsent = true;
   String _draftPhotoAsset = 'assets/images/scenarios/flood_river_boat.png';
   String _draftPhotoName = 'flood_boat_evidence.png · 1.2 MB';
 
-  // Latest Submitted Request
+  // Short-lived SOS capabilities are kept only in memory and never included in profile storage.
+  final Map<String, String> _trackingTokens = {};
   EmergencyRequest? _lastSubmittedRequest;
 
   // Active Rescue Teams Fleet (Live Tracking)
@@ -519,8 +536,23 @@ class RescueProvider extends ChangeNotifier {
 
   // Actions
   void setAuthMethod(String method) {
-    _authMethod = method;
+    _authMethod = 'email';
     notifyListeners();
+  }
+
+  Future<String?> requestPasswordReset(String email) async {
+    final address = email.trim().toLowerCase();
+    if (!address.contains('@')) return 'Enter your account email first.';
+    try {
+      await Supabase.instance.client.auth.resetPasswordForEmail(address);
+      return null;
+    } on AuthException catch (error) {
+      return error.message.toLowerCase().contains('rate')
+          ? 'Too many reset attempts. Try again later.'
+          : 'Could not request a password reset. Check the email and try again.';
+    } catch (_) {
+      return 'Password reset is unavailable. Try again later.';
+    }
   }
 
   void setPhoneNumber(String phone) {
@@ -564,6 +596,36 @@ class RescueProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  void enterPublicSosMode() {
+    _isDemoMode = false;
+    _isLoggedIn = true;
+    _hasOtpError = false;
+    _currentUser = const UserProfile(
+      fullName: 'Citizen',
+      phoneNumber: '',
+      email: '',
+      bloodGroup: '',
+      emergencyContactName: '',
+      emergencyContactPhone: '',
+      address: '',
+      sector: '',
+      medicalNotes: '',
+      isRegistered: false,
+    );
+    _requests.clear();
+    _rescueTeams.clear();
+    _lastSubmittedRequest = null;
+    _trackingTokens.clear();
+    CommandCenterService.watchPublicAlerts(_receivePublicAlert);
+    CommandCenterService.fetchAlerts().then((alerts) {
+      if (!_isDemoMode && alerts.isNotEmpty) {
+        _liveAlerts = alerts;
+        notifyListeners();
+      }
+    });
+    notifyListeners();
+  }
+
   /// Launch app directly in Demo Mode without requiring login or sign up
   void enterDemoMode() {
     _isDemoMode = true;
@@ -585,141 +647,111 @@ class RescueProvider extends ChangeNotifier {
   }
 
   void login() {
-    _isDemoMode = false;
-    _isLoggedIn = true;
-    _hasOtpError = false;
+    // The legacy local OTP screen is not an authentication authority.
+    _hasOtpError = true;
+    _isLoggedIn = false;
     notifyListeners();
-    // If account was already registered with this phone/email, restore full profile
-    lookupAccount(
-      phone: _authMethod == 'phone' ? _phoneNumber : null,
-      email: _authMethod == 'email' ? _email : null,
-    ).then((saved) {
-      if (saved != null) {
-        _currentUser = saved;
-        notifyListeners();
-      }
-    }).catchError((_) {});
   }
 
-  /// Sign in with Google OAuth — returns error string on failure, null on success
-  Future<String?> loginWithGoogle() async {
-    try {
-      final profile = await GoogleSignInService.signIn();
-      if (profile == null) return null; // user cancelled, no error
-      _currentUser = profile;
-      _isDemoMode = false;
-      _isLoggedIn = true;
-      _hasOtpError = false;
-      if (profile.email.isNotEmpty) {
-        _email = profile.email;
-        _authMethod = 'email';
-      }
-      // Persist Google account locally so it can be found on next launch
-      await AccountStorageService.saveAccount(profile);
-      notifyListeners();
-      return null;
-    } catch (e) {
-      return e.toString();
-    }
-  }
+  Future<String?> loginWithGoogle() async => 'Use email and password to sign in.';
 
-  /// Sign in using identifier (phone or email) and password.
-  /// Returns null on success, or an error message string on failure.
   Future<String?> loginWithPassword({
     required String identifier,
     required String password,
   }) async {
-    final cleanId = identifier.trim();
-    if (cleanId.isEmpty) {
-      return 'Please enter your phone number or email.';
-    }
-    if (password.trim().isEmpty) {
-      return 'Please enter your password.';
-    }
+    final email = identifier.trim().toLowerCase();
+    if (!email.contains('@')) return 'Use your email address to sign in.';
+    if (password.isEmpty) return 'Please enter your password.';
 
-    final isPhone = RegExp(r'^[0-9+\s\-]{7,15}$').hasMatch(cleanId);
-    final user = isPhone
-        ? await AccountStorageService.findByPhone(cleanId)
-        : await AccountStorageService.findByEmail(cleanId);
-
-    if (user == null) {
-      return 'No account found for $cleanId. Please create an account.';
-    }
-
-    if (!user.verifyPassword(password.trim())) {
-      return 'Incorrect password. Please try again.';
-    }
-
-    _currentUser = user;
-    _isDemoMode = false;
-    _isLoggedIn = true;
-    _hasOtpError = false;
-    if (user.phoneNumber.isNotEmpty) {
-      _phoneNumber = user.phoneNumber.replaceAll(RegExp(r'[+91\s]'), '');
-      _authMethod = 'phone';
-    } else if (user.email.isNotEmpty) {
-      _email = user.email;
+    try {
+      final response = await Supabase.instance.client.auth.signInWithPassword(email: email, password: password);
+      final user = response.user;
+      if (user == null) return 'Invalid email or password.';
+      final metadata = user.userMetadata ?? const <String, dynamic>{};
+      final saved = await AccountStorageService.findByEmail(email);
+      _currentUser = saved ?? UserProfile(
+        fullName: (metadata['full_name'] ?? user.email ?? email).toString(),
+        phoneNumber: (metadata['phone'] ?? '').toString(),
+        email: user.email ?? email,
+        bloodGroup: (metadata['blood_group'] ?? '').toString(),
+        emergencyContactName: (metadata['emergency_contact_name'] ?? '').toString(),
+        emergencyContactPhone: (metadata['emergency_contact_phone'] ?? '').toString(),
+        address: (metadata['address'] ?? '').toString(),
+        sector: (metadata['sector'] ?? '').toString(),
+        medicalNotes: (metadata['medical_notes'] ?? '').toString(),
+        isRegistered: true,
+      );
+      _email = email;
       _authMethod = 'email';
+      _isDemoMode = false;
+      _isLoggedIn = true;
+      _hasOtpError = false;
+      CommandCenterService.watchPublicAlerts(_receivePublicAlert);
+      notifyListeners();
+      return null;
+    } on AuthException catch (error) {
+      if (error.message.toLowerCase().contains('confirm')) return 'Confirm your email before signing in.';
+      return 'Invalid email or password.';
+    } catch (_) {
+      return 'Sign-in is unavailable. Check your connection and try again.';
     }
-    notifyListeners();
-    return null;
   }
 
-  /// Looks up a saved account by phone or email.
-  /// Returns the [UserProfile] if found, null otherwise.
-  Future<UserProfile?> lookupAccount({
-    String? phone,
-    String? email,
-  }) async {
-    if (phone != null && phone.trim().isNotEmpty) {
-      return AccountStorageService.findByPhone(phone);
-    }
-    if (email != null && email.trim().isNotEmpty) {
-      return AccountStorageService.findByEmail(email);
-    }
-    return null;
+  Future<UserProfile?> lookupAccount({String? phone, String? email}) async {
+    if (email == null || email.trim().isEmpty) return null;
+    return AccountStorageService.findByEmail(email);
   }
 
-  /// Logs in with an existing saved [profile] (skips OTP — account already verified).
   void loginWithSavedAccount(UserProfile profile) {
-    _currentUser = profile;
-    _isDemoMode = false;
-    _isLoggedIn = true;
-    _hasOtpError = false;
-    if (profile.phoneNumber.isNotEmpty) {
-      _phoneNumber = profile.phoneNumber.replaceAll(RegExp(r'[+91\s]'), '');
-      _authMethod = 'phone';
-    } else if (profile.email.isNotEmpty) {
-      _email = profile.email;
-      _authMethod = 'email';
-    }
+    _email = profile.email;
+    _authMethod = 'email';
+    _isLoggedIn = false;
+    _hasOtpError = true;
     notifyListeners();
   }
 
   void logout() {
     CommandCenterService.stopAllTracking();
+    CommandCenterService.stopWatchingPublicAlerts();
+    _trackingTokens.clear();
+    try { Supabase.instance.client.auth.signOut(); } catch (_) {}
     _isLoggedIn = false;
     _isDemoMode = false;
     _hasOtpError = true;
     notifyListeners();
   }
 
-  /// Registers a brand-new citizen account, persists it, and logs them in immediately.
-  Future<void> registerNewAccount(UserProfile profile) async {
+  /// Creates a citizen account with Supabase Auth and never stores its password locally.
+  Future<bool> registerNewAccount(UserProfile profile, {required String password}) async {
+    final email = profile.email.trim().toLowerCase();
+    if (!email.contains('@') || password.length < 6) {
+      throw StateError('Enter a valid email and a password with at least 6 characters.');
+    }
+    final response = await Supabase.instance.client.auth.signUp(
+      email: email,
+      password: password,
+      data: {
+        'full_name': profile.fullName,
+        'phone': profile.phoneNumber,
+        'blood_group': profile.bloodGroup,
+        'emergency_contact_name': profile.emergencyContactName,
+        'emergency_contact_phone': profile.emergencyContactPhone,
+        'address': profile.address,
+        'sector': profile.sector,
+        'medical_notes': profile.medicalNotes,
+      },
+    );
+    if (response.session == null || response.user == null) return false;
+
     _currentUser = profile;
+    _email = email;
+    _authMethod = 'email';
     _isDemoMode = false;
     _isLoggedIn = true;
     _hasOtpError = false;
-    if (profile.phoneNumber.isNotEmpty) {
-      _phoneNumber = profile.phoneNumber.replaceAll('+91 ', '');
-      _authMethod = 'phone';
-    } else if (profile.email.isNotEmpty) {
-      _email = profile.email;
-      _authMethod = 'email';
-    }
-    // Persist so the user can log back in next time
-    await AccountStorageService.saveAccount(profile);
+    CommandCenterService.watchPublicAlerts(_receivePublicAlert);
     notifyListeners();
+    return true;
   }
 
   void setActiveNavIndex(int index) {
@@ -808,7 +840,7 @@ class RescueProvider extends ChangeNotifier {
       dispatchIcon: Icons.emergency,
       description:
           'Automated One-Touch SOS triggered from ${_currentUser.fullName.isNotEmpty ? _currentUser.fullName : "Citizen"}. Immediate rescue assistance required at GPS lock ($lat, $lng).',
-      contactNumber: _currentUser.phoneNumber.isNotEmpty ? _currentUser.phoneNumber : '+91 98470 21836',
+      contactNumber: _currentUser.phoneNumber,
       photoCount: 0,
       createdAt: now,
       isRecent: true,
@@ -817,33 +849,43 @@ class RescueProvider extends ChangeNotifier {
     _requests.insert(0, sosRequest);
     _lastSubmittedRequest = sosRequest;
 
-    // Real-time broadcast to ResQCore Command Center
-    CommandCenterService.sendEmergencyReport(
-      id: sosRequest.id,
-      title: '🚨 CRITICAL ONE-TOUCH SOS',
-      type: 'SOS',
-      location: sosRequest.location,
-      fullAddress: sosRequest.fullAddress,
-      description: sosRequest.description,
-      contactNumber: sosRequest.contactNumber,
-      citizenName: _currentUser.fullName.isNotEmpty ? _currentUser.fullName : 'Citizen User',
-      severity: 'High',
-      latitude: lat,
-      longitude: lng,
-    );
-
-    // Start Real-Time Live Status Tracking with Command Center
+    var submittedRequest = sosRequest;
     if (!_isDemoMode) {
-      CommandCenterService.startTrackingRequest(sosRequest.id, (update) {
-        _updateRequestFromBackend(sosRequest.id, update);
-      });
+      final response = await CommandCenterService.sendEmergencyReport(
+        id: sosRequest.id,
+        title: '🚨 CRITICAL ONE-TOUCH SOS',
+        type: 'SOS',
+        location: sosRequest.location,
+        fullAddress: sosRequest.fullAddress,
+        description: sosRequest.description,
+        contactNumber: sosRequest.contactNumber,
+        citizenName: _currentUser.fullName.isNotEmpty ? _currentUser.fullName : 'Citizen User',
+        severity: 'High',
+        latitude: lat,
+        longitude: lng,
+      );
+      if (response == null) {
+        _requests.removeWhere((request) => request.id == sosRequest.id);
+        _lastSubmittedRequest = null;
+        throw StateError('Could not send the SOS. Check your connection and retry.');
+      }
+      final incident = response['incident'] as Map<String, dynamic>? ?? {};
+      final trackingToken = response['trackingToken']?.toString() ?? '';
+      final serverId = incident['id']?.toString() ?? sosRequest.id;
+      submittedRequest = sosRequest.copyWith(id: serverId, status: RequestStatus.pending);
+      _requests[_requests.indexWhere((request) => request.id == sosRequest.id)] = submittedRequest;
+      _lastSubmittedRequest = submittedRequest;
+      if (trackingToken.isNotEmpty) {
+        _trackingTokens[serverId] = trackingToken;
+        unawaited(CommandCenterService.startTrackingRequest(serverId, trackingToken: trackingToken, onUpdate: (update) => _updateRequestFromBackend(serverId, update)));
+      }
     }
 
     notifyListeners();
-    return sosRequest;
+    return submittedRequest;
   }
 
-  EmergencyRequest submitDraftReport() {
+  Future<EmergencyRequest> submitDraftReport() async {
     final now = DateTime.now();
     final newId =
         'RQ-${now.year.toString().substring(2)}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}-${(now.hour * 100 + now.minute).toString().padLeft(4, '0')}';
@@ -874,30 +916,40 @@ class RescueProvider extends ChangeNotifier {
     _requests.insert(0, newRequest);
     _lastSubmittedRequest = newRequest;
 
-    // Real-time broadcast to ResQCore Command Center
-    CommandCenterService.sendEmergencyReport(
-      id: newRequest.id,
-      title: newRequest.title,
-      type: _draftType.title,
-      location: newRequest.location,
-      fullAddress: newRequest.fullAddress,
-      description: newRequest.description,
-      contactNumber: newRequest.contactNumber,
-      citizenName: _currentUser.fullName.isNotEmpty ? _currentUser.fullName : 'Citizen User',
-      severity: _draftType == EmergencyType.flood ? 'High' : 'Medium',
-      latitude: lat,
-      longitude: lng,
-    );
-
-    // Start Real-Time Live Status Tracking with Command Center
+    var submittedRequest = newRequest;
     if (!_isDemoMode) {
-      CommandCenterService.startTrackingRequest(newRequest.id, (update) {
-        _updateRequestFromBackend(newRequest.id, update);
-      });
+      final response = await CommandCenterService.sendEmergencyReport(
+        id: newRequest.id,
+        title: newRequest.title,
+        type: _draftType.title,
+        location: newRequest.location,
+        fullAddress: newRequest.fullAddress,
+        description: newRequest.description,
+        contactNumber: newRequest.contactNumber,
+        citizenName: _currentUser.fullName.isNotEmpty ? _currentUser.fullName : 'Citizen User',
+        severity: _draftType == EmergencyType.flood ? 'High' : 'Medium',
+        latitude: lat,
+        longitude: lng,
+      );
+      if (response == null) {
+        _requests.removeWhere((request) => request.id == newRequest.id);
+        _lastSubmittedRequest = null;
+        throw StateError('Could not submit the report. Check your connection and retry.');
+      }
+      final incident = response['incident'] as Map<String, dynamic>? ?? {};
+      final trackingToken = response['trackingToken']?.toString() ?? '';
+      final serverId = incident['id']?.toString() ?? newRequest.id;
+      submittedRequest = newRequest.copyWith(id: serverId, status: RequestStatus.pending);
+      _requests[_requests.indexWhere((request) => request.id == newRequest.id)] = submittedRequest;
+      _lastSubmittedRequest = submittedRequest;
+      if (trackingToken.isNotEmpty) {
+        _trackingTokens[serverId] = trackingToken;
+        unawaited(CommandCenterService.startTrackingRequest(serverId, trackingToken: trackingToken, onUpdate: (update) => _updateRequestFromBackend(serverId, update)));
+      }
     }
 
     notifyListeners();
-    return newRequest;
+    return submittedRequest;
   }
 
   /// Updates local emergency request status whenever Command Center dispatches a team
@@ -932,6 +984,11 @@ class RescueProvider extends ChangeNotifier {
       status: newStatus,
       dispatchUpdate: dispatchText,
     );
+
+    if (newStatus == RequestStatus.resolved) {
+      CommandCenterService.stopTrackingRequest(requestId);
+      _trackingTokens.remove(requestId);
+    }
 
     if (_lastSubmittedRequest?.id == requestId) {
       _lastSubmittedRequest = _requests[index];

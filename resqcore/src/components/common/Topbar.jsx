@@ -20,7 +20,7 @@ import { useApp } from '../../context/AppContext';
 import { fetchDistrictWeather } from '../../utils/weatherService';
 
 export const Topbar = ({ title, breadcrumb }) => {
-  const { user, setUser, setIsAuthenticated, isLoadingSync, setIsLoadingSync, isDemoMode, setIsDemoMode, citizenBridgeConnected } = useApp();
+  const { user, setUser, setIsAuthenticated, signOut, isLoadingSync, setIsLoadingSync, isDemoMode, setIsDemoMode, citizenBridgeConnected } = useApp();
   const [isDistrictMenuOpen, setIsDistrictMenuOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
 
@@ -372,11 +372,13 @@ export const Topbar = ({ title, breadcrumb }) => {
                     textTransform: 'uppercase'
                   }}
                 >
-                  Switch Operational Role
+                  Demo role selection
                 </div>
                 {roles.map((r) => (
                   <button
                     key={r}
+                    disabled={!isDemoMode}
+                    aria-disabled={!isDemoMode}
                     onClick={() => {
                       setUser({ ...user, role: r });
                       setIsUserMenuOpen(false);
@@ -406,7 +408,7 @@ export const Topbar = ({ title, breadcrumb }) => {
 
               <div style={{ borderTop: '1px solid #1E293B', paddingTop: '6px' }}>
                 <button
-                  onClick={() => setIsAuthenticated(false)}
+                  onClick={() => signOut()}
                   style={{
                     display: 'flex',
                     alignItems: 'center',

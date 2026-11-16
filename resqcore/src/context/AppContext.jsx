@@ -8,12 +8,15 @@ import {
   initialAlerts,
   initialCameras
 } from '../data/initialData';
+import { apiFetch, mapAlert, mapIncident, mapMessage, mapTeam, supabase, supabaseConfigured } from '../lib/supabase';
+import { createRealtimeEventSource } from '../lib/realtimeEventSource';
 
 const AppContext = createContext();
 
 export const AppProvider = ({ children }) => {
   // Navigation & Auth
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [session, setSession] = useState(null);
   const [isDemoMode, setIsDemoMode] = useState(false);
   const [activeTab, setActiveTab] = useState('command-center');
   const [user, setUser] = useState({
@@ -54,6 +57,45 @@ export const AppProvider = ({ children }) => {
   // Modals
   const [assignModalTeam, setAssignModalTeam] = useState(null);
 
+  useEffect(() => {
+    if (!supabaseConfigured || !supabase) return undefined;
+    let active = true;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      if (!nextSession) {
+        setIsAuthenticated(false);
+        setCitizenBridgeConnected(false);
+      }
+    });
+
+    supabase.auth.getSession().then(async ({ data }) => {
+      if (!active || !data.session) return;
+      setSession(data.session);
+      try {
+        const profile = await apiFetch('/auth/me');
+        if (!active) return;
+        if (!['command_admin', 'command_operator'].includes(profile.role)) {
+          await supabase.auth.signOut();
+          return;
+        }
+        setUser(prev => ({
+          ...prev,
+          email: profile.user.email,
+          name: data.session.user.user_metadata?.full_name || profile.user.email,
+          role: profile.role === 'command_admin' ? 'District Administrator' : 'Command Operator',
+        }));
+        setIsAuthenticated(true);
+      } catch {
+        await supabase.auth.signOut();
+      }
+    });
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
   // Helper to trigger a toast
   const addToast = (toast) => {
     const id = Date.now().toString();
@@ -66,6 +108,14 @@ export const AppProvider = ({ children }) => {
 
   const removeToast = (id) => {
     setToasts(prev => prev.filter(t => t.id !== id));
+  };
+
+  const signOut = async () => {
+    if (supabase) await supabase.auth.signOut();
+    setSession(null);
+    setIsAuthenticated(false);
+    setIsDemoMode(false);
+    setCitizenBridgeConnected(false);
   };
 
   // Emergency Audio Alert Chime using Web Audio API
@@ -106,52 +156,42 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  // Initial Data Sync from Real-Time Backend
+  // Initial live data sync. Subsequent writes arrive over Supabase Realtime.
   useEffect(() => {
-    if (isDemoMode) return;
+    if (isDemoMode || !isAuthenticated || !supabaseConfigured) return undefined;
+    let active = true;
+    setIsLoadingSync(true);
 
-    fetch('http://localhost:5000/api/incidents')
-      .then(res => res.json())
-      .then(data => {
-        if (data.incidents && data.incidents.length > 0) {
-          setIncidents(data.incidents);
-        }
-      })
-      .catch(() => { });
+    Promise.all([
+      apiFetch('/incidents'),
+      apiFetch('/teams'),
+      apiFetch('/alerts'),
+      apiFetch('/chat/messages'),
+    ]).then(([incidentData, teamData, alertData, messageData]) => {
+      if (!active) return;
+      setIncidents((incidentData.incidents || []).map(mapIncident));
+      setTeams((teamData.teams || []).map(mapTeam));
+      setAlerts((alertData.alerts || []).map(mapAlert));
+      const liveMessages = messageData.messages || {};
+      setMessages({ ...liveMessages, 'ernakulam-command': liveMessages['command:all'] || [] });
+    }).catch(() => {
+      if (active) addToast({ type: 'broadcast-sent', title: 'Live data unavailable', detail: 'Check your connection and try again.' });
+    }).finally(() => {
+      if (active) setIsLoadingSync(false);
+    });
 
-    fetch('http://localhost:5000/api/teams')
-      .then(res => res.json())
-      .then(data => {
-        if (data.teams && data.teams.length > 0) {
-          setTeams(data.teams);
-        }
-      })
-      .catch(() => { });
+    return () => { active = false; };
+  }, [isDemoMode, isAuthenticated]);
 
-    fetch('http://localhost:5000/api/alerts')
-      .then(res => res.json())
-      .then(data => {
-        if (data.alerts && data.alerts.length > 0) {
-          setAlerts(data.alerts);
-        }
-      })
-      .catch(() => { });
-
-    fetch('http://localhost:5000/api/chat/messages')
-      .then(res => res.json())
-      .then(data => {
-        if (data.messages && Object.keys(data.messages).length > 0) {
-          setMessages(prev => ({ ...prev, ...data.messages }));
-        }
-      })
-      .catch(() => { });
-  }, [isDemoMode]);
-
-  // Real-Time Multi-Channel SSE Event Pipeline
+  // Authenticated Postgres changes keep incidents, teams, alerts, and chat in sync.
   useEffect(() => {
+    if (!isAuthenticated || isDemoMode || !supabaseConfigured || !session?.user?.id) {
+      setCitizenBridgeConnected(false);
+      return undefined;
+    }
     let eventSource;
     try {
-      eventSource = new EventSource('http://localhost:5000/api/stream');
+      eventSource = createRealtimeEventSource(session.user.id);
 
       eventSource.onopen = () => {
         setCitizenBridgeConnected(true);
@@ -431,165 +471,86 @@ export const AppProvider = ({ children }) => {
     return () => {
       if (eventSource) eventSource.close();
     };
-  }, []);
+  }, [isAuthenticated, isDemoMode, session?.user?.id]);
 
   // Get active selected incident object
   const selectedIncident = incidents.find(i => i.id === selectedIncidentId) || incidents[0];
 
-  // Flow: Verify Incident
-  const verifyIncident = (id) => {
-    setIncidents(prev =>
-      prev.map(inc => {
-        if (inc.id === id) {
-          return {
-            ...inc,
-            status: 'Verified',
-            responseSummary: 'Bravo 02',
-            responseDetail: 'ETA 12 min',
-            assignedTeam: 'Bravo 02',
-            verifiedAt: '14:33 IST'
-          };
-        }
-        return inc;
-      })
-    );
+  // Verification and dispatch are separate live operations; demo mode remains local.
+  const verifyIncident = async (id) => {
+    if (isDemoMode) {
+      setIncidents(prev => prev.map(inc => inc.id === id ? { ...inc, status: 'Verified', responseSummary: 'Verified · Standby for dispatch', responseDetail: 'Ready to assign' } : inc));
+      setToasts(prev => prev.filter(toast => toast.incidentId !== id));
+      return;
+    }
 
-    // Update Bravo 02 status
-    setTeams(prev =>
-      prev.map(team => {
-        if (team.id === 'bravo-02') {
-          return {
-            ...team,
-            status: 'Deployed',
-            task: 'INC-2048 · Flash flooding',
-            eta: 'ETA 12 min'
-          };
-        }
-        return team;
-      })
-    );
-
-    // Dismiss any initial high alert toast for this incident
-    setToasts(prev => prev.filter(t => t.incidentId !== id));
-
-    // Notify Citizen App bridge in real time
-    fetch('http://localhost:5000/api/command/dispatch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        requestId: id,
-        incidentId: id,
-        teamName: 'Bravo 02',
-        eta: '12 min'
-      })
-    }).catch(() => { });
-
-    fetch('http://localhost:5000/api/command/verify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ incidentId: id })
-    }).catch(() => { });
-
-    // Show team assigned toast matching Figma "Toast / Team assigned"
-    addToast({
-      id: 'toast-assigned-' + Date.now(),
-      type: 'team-assigned',
-      title: 'Team assigned',
-      code: `${id} · Bravo 02 · ETA 12 min`,
-      detail: 'Verified · En route to Fort Kochi',
-      incidentId: id
-    });
+    try {
+      const result = await apiFetch('/command/verify', { method: 'POST', body: JSON.stringify({ incidentId: id }) });
+      const verified = mapIncident(result.incident);
+      setIncidents(prev => prev.map(incident => incident.id === id ? verified : incident));
+      setToasts(prev => prev.filter(toast => toast.incidentId !== id));
+    } catch (error) {
+      addToast({ type: 'high-incident', title: 'Verification failed', code: id, detail: error.message, incidentId: id });
+    }
   };
 
-  // Flow: Assign specific team to an incident
-  const assignTeamToIncident = (teamId, incidentId) => {
-    const team = teams.find(t => t.id === teamId);
-    const incident = incidents.find(i => i.id === incidentId);
-
+  // Flow: Assign a real team through the protected backend; demo mode remains simulated.
+  const assignTeamToIncident = async (teamId, incidentId) => {
+    const team = teams.find(item => item.id === teamId);
+    const incident = incidents.find(item => item.id === incidentId);
     if (!team || !incident) return;
 
-    setTeams(prev =>
-      prev.map(t => {
-        if (t.id === teamId) {
-          return {
-            ...t,
-            status: 'Deployed',
-            task: `${incident.id} · ${incident.title}`,
-            eta: 'ETA 15 min'
-          };
-        }
-        return t;
-      })
-    );
+    if (isDemoMode) {
+      setTeams(prev => prev.map(item => item.id === teamId ? { ...item, status: 'Deployed', task: `${incident.id} · ${incident.title}`, eta: 'ETA 15 min' } : item));
+      setIncidents(prev => prev.map(item => item.id === incidentId ? { ...item, status: item.status === 'Unverified' ? 'Verified' : item.status, responseSummary: team.name, responseDetail: 'ETA 15 min', assignedTeam: team.name } : item));
+      setAssignModalTeam(null);
+      return;
+    }
 
-    setIncidents(prev =>
-      prev.map(i => {
-        if (i.id === incidentId) {
-          return {
-            ...i,
-            status: i.status === 'Unverified' ? 'Verified' : i.status,
-            responseSummary: team.name,
-            responseDetail: 'ETA 15 min',
-            assignedTeam: team.name
-          };
-        }
-        return i;
-      })
-    );
-
-    // Notify Backend & Field Teams in real time
-    fetch('http://localhost:5000/api/command/dispatch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        incidentId: incident.id,
-        teamName: team.name,
-        eta: '15 min'
-      })
-    }).catch(() => { });
-
-    addToast({
-      type: 'team-assigned',
-      title: 'Team assigned',
-      code: `${incident.id} · ${team.name} · ETA 15 min`,
-      detail: `Assigned · Dispatched to ${incident.shortLocation || incident.location}`,
-      incidentId: incident.id
-    });
-
-    setAssignModalTeam(null);
+    try {
+      const result = await apiFetch('/command/dispatch', {
+        method: 'POST',
+        body: JSON.stringify({ incidentId: incident.id, teamName: team.name, eta: '15 min' }),
+      });
+      const updated = mapIncident(result.incident);
+      setIncidents(prev => prev.map(item => item.id === incidentId ? updated : item));
+      setTeams(prev => prev.map(item => item.id === team.id ? { ...item, status: 'Deployed', task: `${incident.id} · ${incident.title}`, eta: 'ETA 15 min' } : item));
+      addToast({ type: 'team-assigned', title: 'Team assigned', code: `${incident.id} · ${team.name} · ETA 15 min`, detail: `Dispatched to ${incident.shortLocation || incident.location}`, incidentId: incident.id });
+      setAssignModalTeam(null);
+    } catch (error) {
+      addToast({ type: 'high-incident', title: 'Dispatch failed', code: incident.id, detail: error.message, incidentId: incident.id });
+    }
   };
 
   // Flow: Send Chat Message
   const sendMessage = (channelId, text) => {
-    if (!text.trim()) return;
-    const newMessage = {
-      id: 'm-' + Date.now(),
-      sender: `${user.name} · You`,
-      initials: 'AK',
-      isSelf: true,
-      time: new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()),
-      text: text.trim()
-    };
+    const cleanText = text.trim();
+    if (!cleanText) return;
 
-    setMessages(prev => ({
-      ...prev,
-      [channelId]: [...(prev[channelId] || []), newMessage]
-    }));
-
-    // Post to Real-Time Backend
-    fetch('http://localhost:5000/api/chat/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: newMessage.id,
-        channel: channelId,
+    if (isDemoMode) {
+      const newMessage = {
+        id: 'm-' + Date.now(),
         sender: `${user.name} · You`,
-        role: user.role,
         initials: 'AK',
         isSelf: true,
-        text: text.trim()
+        time: new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()),
+        text: cleanText,
+      };
+      setMessages(prev => ({ ...prev, [channelId]: [...(prev[channelId] || []), newMessage] }));
+      return;
+    }
+
+    apiFetch('/chat/send', { method: 'POST', body: JSON.stringify({ channel: 'command:all', text: cleanText }) })
+      .then(({ message }) => {
+        const current = mapMessage(message, session?.user?.id);
+        setMessages(prev => {
+          const channel = 'ernakulam-command';
+          const list = prev[channel] || [];
+          if (list.some(item => item.id === current.id)) return prev;
+          return { ...prev, [channel]: [...list, current] };
+        });
       })
-    }).catch(() => { });
+      .catch((error) => addToast({ type: 'broadcast-sent', title: 'Message not sent', detail: error.message }));
   };
 
   // Flow: Send Broadcast
@@ -614,17 +575,12 @@ export const AppProvider = ({ children }) => {
       ...prev
     ]);
 
-    // Dispatch to Backend & all mobile apps in real time
-    fetch('http://localhost:5000/api/command/broadcast', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        recipients,
-        message,
-        severity,
-        issuedBy: `${user.name} (${user.role})`
-      })
-    }).catch(() => { });
+    if (!isDemoMode) {
+      apiFetch('/command/broadcast', {
+        method: 'POST',
+        body: JSON.stringify({ recipients, message, severity }),
+      }).catch((error) => addToast({ type: 'broadcast-sent', title: 'Broadcast not sent', detail: error.message }));
+    }
   };
 
   // Open incident in drawer & navigate
@@ -704,6 +660,8 @@ export const AppProvider = ({ children }) => {
       value={{
         isAuthenticated,
         setIsAuthenticated,
+        session,
+        signOut,
         activeTab,
         setActiveTab,
         user,
