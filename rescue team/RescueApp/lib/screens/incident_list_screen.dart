@@ -24,7 +24,7 @@ class IncidentListScreen extends StatefulWidget {
 
 class _IncidentListScreenState extends State<IncidentListScreen> {
   final TextEditingController _searchController = TextEditingController();
-  String _activeTab = 'All'; // 'All', 'Active', 'Resolved'
+  String _activeTab = 'All'; // 'All', 'Assigned', 'Active', 'Resolved'
   String _searchQuery = '';
   bool _sortBySeverity = true;
 
@@ -37,7 +37,17 @@ class _IncidentListScreenState extends State<IncidentListScreen> {
   List<Incident> get _filteredIncidents {
     List<Incident> list = widget.appState.incidents;
 
-    if (_activeTab == 'Active') {
+    if (_activeTab == 'Assigned') {
+      list = list
+          .where((i) =>
+              i.status != 'Resolved' &&
+              i.isAssignedTo(
+                teamId: widget.appState.teamId,
+                teamName: widget.appState.teamName,
+                userName: widget.appState.userName,
+              ))
+          .toList();
+    } else if (_activeTab == 'Active') {
       list = list.where((i) => i.status == 'Active').toList();
     } else if (_activeTab == 'Resolved') {
       list = list.where((i) => i.status == 'Resolved').toList();
@@ -48,14 +58,16 @@ class _IncidentListScreenState extends State<IncidentListScreen> {
       list = list.where((i) {
         return i.title.toLowerCase().contains(q) ||
             i.location.toLowerCase().contains(q) ||
+            i.teamAssigned.toLowerCase().contains(q) ||
             i.description.toLowerCase().contains(q);
       }).toList();
     }
 
     if (_sortBySeverity) {
+      list = List<Incident>.from(list);
       list.sort((a, b) {
-        final order = {'High': 0, 'Medium': 1, 'Info': 2};
-        return (order[a.severity] ?? 3).compareTo(order[b.severity] ?? 3);
+        final order = {'Critical': 0, 'High': 1, 'Medium': 2, 'Info': 3, 'Low': 4};
+        return (order[a.severity] ?? 5).compareTo(order[b.severity] ?? 5);
       });
     }
 
@@ -100,6 +112,7 @@ class _IncidentListScreenState extends State<IncidentListScreen> {
                   child: Row(
                     children: [
                       _buildFilterTab('All'),
+                      _buildFilterTab('Assigned'),
                       _buildFilterTab('Active'),
                       _buildFilterTab('Resolved'),
                     ],
@@ -351,7 +364,7 @@ class _IncidentListScreenState extends State<IncidentListScreen> {
     Color iconColor;
     IconData icon;
 
-    if (inc.severity == 'High') {
+    if (inc.severity == 'High' || inc.severity == 'Critical') {
       badgeBg = TacticalColors.secondaryContainer.withOpacity(0.4);
       badgeTextColor = TacticalColors.secondary;
       iconColor = TacticalColors.secondary;
@@ -524,13 +537,50 @@ class _IncidentListScreenState extends State<IncidentListScreen> {
               children: [
                 const Icon(Icons.schedule, color: TacticalColors.outline, size: 14),
                 const SizedBox(width: 5),
-                Text(
-                  inc.timestamp,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: TacticalColors.onSurfaceVariant,
+                Expanded(
+                  child: Text(
+                    '${inc.timestamp} · ${inc.displayStatus}',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: TacticalColors.onSurfaceVariant,
+                    ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
+                if (inc.teamAssigned != 'Unassigned')
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: inc.isAssignedTo(
+                        teamId: widget.appState.teamId,
+                        teamName: widget.appState.teamName,
+                        userName: widget.appState.userName,
+                      )
+                          ? TacticalColors.tertiary.withValues(alpha: 0.2)
+                          : TacticalColors.primaryContainer.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      inc.isAssignedTo(
+                        teamId: widget.appState.teamId,
+                        teamName: widget.appState.teamName,
+                        userName: widget.appState.userName,
+                      )
+                          ? 'YOUR MISSION'
+                          : inc.teamAssigned,
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        color: inc.isAssignedTo(
+                          teamId: widget.appState.teamId,
+                          teamName: widget.appState.teamName,
+                          userName: widget.appState.userName,
+                        )
+                            ? TacticalColors.tertiary
+                            : TacticalColors.primary,
+                      ),
+                    ),
+                  ),
               ],
             ),
             const SizedBox(height: 10),

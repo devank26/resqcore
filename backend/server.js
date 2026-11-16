@@ -1,526 +1,575 @@
 import http from 'http';
+import fs from 'fs';
+import path from 'path';
 import { URL } from 'url';
-import { store } from './services/store.js';
+import {
+  PORT, IS_PROD, STATIC_DIR, ALLOWED_ORIGINS, isOriginAllowed
+} from './services/config.js';
+import { dbManager as db } from './services/database.js';
 import { eventBus } from './services/eventBus.js';
 import { SimpleWebSocketServer } from './services/websocketServer.js';
+import { extractToken, verifyEnvBearerToken } from './services/auth.js';
+import { HttpError, badRequest, forbidden, notFound, unauthorized } from './services/errors.js';
+import * as actions from './services/actions.js';
+import {
+  getOsLiveSnapshot,
+  initLiveOsFromDb,
+  startLiveAgingTimer,
+  stopLiveAgingTimer
+} from './services/osEngine/runtime.js';
+import { startFeeds, stopFeeds } from './services/feeds.js';
 
-const PORT = process.env.PORT || 5000;
+const VERSION = '3.0.0';
+const MAX_BODY_BYTES = 1024 * 1024;
 
-// Helper to send JSON responses
-function sendJSON(res, statusCode, data) {
-  res.writeHead(statusCode, {
-    'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With'
-  });
-  res.end(JSON.stringify(data));
+const ANY = ['command', 'rescue', 'citizen'];
+const STAFF = ['command', 'rescue'];
+const COMMAND = ['command'];
+const RESCUE = ['rescue'];
+
+// ------------------------------------------------------------------ helpers
+
+class Reply {
+  constructor(status, body) { this.status = status; this.body = body; }
+}
+const reply = (status, body) => new Reply(status, body);
+const HANDLED = Symbol('handled');
+
+function sameHostOrigin(origin, req) {
+  try {
+    return new URL(origin).host === req.headers.host;
+  } catch {
+    return false;
+  }
 }
 
-// Helper to parse JSON body
-function parseBody(req) {
-  return new Promise((resolve) => {
-    let body = '';
+function applySecurityHeaders(res) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Frame-Options', 'DENY');
+}
+
+function applyCors(req, res) {
+  const origin = req.headers.origin;
+  if (!origin) return;
+  res.setHeader('Vary', 'Origin');
+  if (isOriginAllowed(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGINS.includes('*') ? '*' : origin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Max-Age', '600');
+  }
+}
+
+function sendJSON(res, status, data, extraHeaders = {}) {
+  const payload = JSON.stringify(data);
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(payload),
+    'Cache-Control': 'no-store',
+    ...extraHeaders
+  });
+  res.end(payload);
+}
+
+function readJson(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let aborted = false;
     req.on('data', (chunk) => {
-      body += chunk;
-      // Protect against oversized payload
-      if (body.length > 2e6) {
-        req.destroy();
+      if (aborted) return;
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        aborted = true;
+        reject(new HttpError(413, 'Request body too large'));
+        req.resume();
+        return;
       }
+      chunks.push(chunk);
     });
     req.on('end', () => {
+      if (aborted) return;
+      const raw = Buffer.concat(chunks).toString('utf8');
+      if (!raw.trim()) return resolve({});
       try {
-        resolve(JSON.parse(body || '{}'));
-      } catch (e) {
-        resolve({});
+        const parsed = JSON.parse(raw);
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          return reject(badRequest('JSON body must be an object'));
+        }
+        resolve(parsed);
+      } catch {
+        reject(badRequest('Request body is not valid JSON'));
       }
     });
+    req.on('error', reject);
   });
 }
 
+function authenticate(req, url) {
+  const token = extractToken(req, url);
+  if (!token) return null;
+  const role = verifyEnvBearerToken(token);
+  if (!role) return null;
+  const headerTeamId = req.headers['x-team-id'];
+  const queryTeamId = url?.searchParams?.get('teamId');
+  return {
+    user: {
+      id: `env-${role}`,
+      name: `${role.toUpperCase()} Operator`,
+      role,
+      teamId: (typeof headerTeamId === 'string' && headerTeamId.trim()) || (queryTeamId && queryTeamId.trim()) || null
+    }
+  };
+}
+
+// ------------------------------------------------------------------ routing
+
+const routes = [];
+
+/** roles: null = public, otherwise the list of roles allowed to call it. */
+function route(method, pattern, roles, handler) {
+  const keys = [];
+  const regex = new RegExp('^' + pattern.replace(/:([A-Za-z]+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '/?$');
+  routes.push({ method, regex, keys, roles, handler });
+}
+
+function matchRoute(method, pathname) {
+  let pathMatched = false;
+  for (const r of routes) {
+    const m = r.regex.exec(pathname);
+    if (!m) continue;
+    pathMatched = true;
+    if (r.method !== method) continue;
+    const params = {};
+    r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
+    return { route: r, params };
+  }
+  return { route: null, pathMatched };
+}
+
+// ---- public / auth
+route('GET', '/api/health', null, async () => {
+  await db.query('SELECT 1');
+  return { status: 'online', service: 'ResQCore Unified Real-Time Backend', version: VERSION, timestamp: new Date().toISOString() };
+});
+
+route('POST', '/api/auth/login', null, async ({ body }) => actions.login(body));
+route('POST', '/api/auth/register', null, async ({ body }) => actions.login(body));
+route('GET', '/api/auth/me', ANY, async ({ user }) => ({ success: true, user }));
+
+// ---- realtime stream (SSE)
+route('GET', '/api/stream', ANY, async ({ req, res, user }) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  });
+  const viewer = { id: user.id, role: user.role, name: user.name, teamId: user.teamId || null };
+  res.write(`data: ${JSON.stringify({ type: 'connected', time: Date.now(), service: 'ResQCore Real-Time Event Stream', role: user.role, userId: user.id })}\n\n`);
+  const client = eventBus.addSSEClient(res, viewer);
+
+  req.on('close', () => {
+    eventBus.removeSSEClient(client);
+  });
+  return HANDLED;
+});
+
+// ---- OS engine state & algorithms (Section 9)
+route('GET', '/api/os/state', null, async () => ({ success: true, state: getOsLiveSnapshot() }));
+route('GET', '/api/os-live', null, async () => actions.getOsLive());
+route('POST', '/api/os-live/resources', COMMAND, async ({ body }) =>
+  await actions.updateOsResourceTotals(body)
+);
+route('GET', '/api/os-algo/schedulers', null, async ({ query }) =>
+  await actions.getSchedulerComparison({
+    source: query.get('source') || 'live',
+    quantum: query.get('quantum')
+  })
+);
+route('POST', '/api/os-algo/schedulers', null, async ({ body }) =>
+  actions.runCustomSchedulerComparison(body)
+);
+route('GET', '/api/os-algo/deadlock', null, async () => actions.getDeadlockAnalysis());
+route('GET', '/api/os-algo/semaphore-demo', null, async ({ query }) =>
+  actions.getSemaphoreDemo({
+    capacity: query.get('capacity'),
+    items: query.get('items'),
+    consumeEvery: query.get('consumeEvery')
+  })
+);
+
+// ---- citizen
+route('POST', '/api/citizen/sos', ['citizen', 'command'], async ({ user, body }) => {
+  const { incident, duplicate } = await actions.createCitizenSos(user, body);
+  return reply(duplicate ? 200 : 201, { success: true, duplicate, incident, request: incident });
+});
+
+route('GET', '/api/citizen/status/:id', null, async ({ params }) => {
+  const incident = await actions.getIncidentById(params.id);
+  return { success: true, request: incident, incident };
+});
+
+const myRequests = async ({ query }) => {
+  const requests = await actions.listCitizenRequests({ phone: query.get('phone') });
+  return { success: true, count: requests.length, requests };
+};
+route('GET', '/api/citizen/requests', null, myRequests);
+route('GET', '/api/citizen/my-requests', null, myRequests);
+
+// ---- incidents
+route('GET', '/api/incidents', null, async ({ query }) => {
+  const list = await actions.listIncidents({ status: query.get('status') });
+  return { success: true, count: list.length, incidents: list };
+});
+route('GET', '/api/incidents/:id/suggest-team', null, async ({ params }) =>
+  await actions.suggestTeamsForIncident(params.id)
+);
+route('GET', '/api/incidents/:id', null, async ({ params }) => ({
+  success: true,
+  incident: await actions.getIncidentById(params.id)
+}));
+route('POST', '/api/incidents/update', STAFF, async ({ user, body }) => ({
+  success: true,
+  incident: await actions.updateIncidentStatus(user, body)
+}));
+route('POST', '/api/incidents/report', STAFF, async ({ user, body }) =>
+  reply(201, { success: true, incident: await actions.reportFieldIncident(user, body) })
+);
+
+// ---- command
+route('POST', '/api/command/dispatch', COMMAND, async ({ user, body }) => {
+  const { incident, team } = await actions.dispatchTeam(user, body);
+  return { success: true, incident, request: incident, team };
+});
+route('POST', '/api/command/verify', COMMAND, async ({ user, body }) => ({
+  success: true,
+  incident: await actions.verifyIncident(user, body)
+}));
+route('POST', '/api/command/broadcast', COMMAND, async ({ user, body }) =>
+  reply(201, { success: true, alert: await actions.broadcast(user, body) })
+);
+
+// ---- teams / telemetry
+route('GET', '/api/teams', null, async () => ({ success: true, teams: await actions.listTeams() }));
+route('POST', '/api/teams/telemetry', RESCUE, async ({ user, body }) => ({
+  success: true,
+  team: await actions.postTelemetry(user, body)
+}));
+route('POST', '/api/teams/status', RESCUE, async ({ user, body }) => ({
+  success: true,
+  team: await actions.setTeamStatus(user, body)
+}));
+route('POST', '/api/teams/sos', RESCUE, async ({ user, body }) => {
+  const { incident, sosEvent, team } = await actions.createRescueSos(user, body);
+  return reply(201, { success: true, incident, sosEvent, team });
+});
+route('GET', '/api/telemetry/live', null, async () => ({
+  success: true,
+  telemetry: await db.getLatestTelemetry()
+}));
+route('GET', '/api/telemetry/history/:teamId', null, async ({ params, query }) => {
+  const limit = Math.min(Math.max(parseInt(query.get('limit') || '100', 10) || 100, 1), 500);
+  return { success: true, teamId: params.teamId, history: await db.getTelemetryHistory(params.teamId, limit) };
+});
+
+// ---- rescue SOS events
+route('GET', '/api/sos/active', null, async () => {
+  const events = await db.getActiveSosEvents();
+  return { success: true, count: events.length, events };
+});
+route('POST', '/api/sos/resolve/:id', COMMAND, async ({ user, params }) => ({
+  success: true,
+  event: await actions.resolveSos(user, params.id)
+}));
+
+// ---- chat
+route('GET', '/api/chat/messages', null, async ({ user, query }) => ({
+  success: true,
+  messages: await actions.listMessages({ channel: query.get('channel') || 'all', limit: query.get('limit'), since: query.get('since'), user })
+}));
+route('POST', '/api/chat/send', STAFF, async ({ user, body }) => {
+  const { channel, message, duplicate } = await actions.sendChat(user, body);
+  return reply(duplicate ? 200 : 201, { success: true, channel, message, duplicate });
+});
+
+// ---- alerts / shelters / sectors
+route('GET', '/api/alerts', null, async ({ user }) => ({
+  success: true,
+  alerts: await actions.listAlerts(user)
+}));
+route('GET', '/api/shelters', null, async () => ({
+  success: true,
+  shelters: await db.getShelters()
+}));
+route('GET', '/api/resources', null, async () => ({
+  success: true,
+  ...(await db.getResourcesSnapshot())
+}));
+route('POST', '/api/shelters/update', COMMAND, async ({ user, body }) => ({
+  success: true,
+  shelter: await actions.updateShelter(user, body)
+}));
+
+route('GET', '/api/sectors', null, async ({ query }) => {
+  const sectors = await db.getSectors(query.get('theater'));
+  return { success: true, count: sectors.length, sectors };
+});
+route('GET', '/api/sectors/:id', null, async ({ params }) => {
+  const sector = await db.getSectorById(params.id);
+  if (!sector) throw notFound('Sector not found');
+  const allIncidents = await db.getAllIncidents();
+  const allTeams = await db.getAllTeams();
+  return {
+    success: true,
+    sector,
+    incidents: allIncidents.filter((i) => i.sectorId === params.id),
+    teams: allTeams.filter((t) => t.sectorId === params.id)
+  };
+});
+const sectorUpdate = async ({ user, params, body }) => ({
+  success: true,
+  sector: await actions.updateSector(user, params.id, body)
+});
+route('PUT', '/api/sectors/:id', COMMAND, sectorUpdate);
+route('POST', '/api/sectors/:id', COMMAND, sectorUpdate);
+
+// ---- volunteers
+route('GET', '/api/volunteers', null, async ({ query }) => {
+  const volunteers = await db.getAllVolunteers({ sectorId: query.get('sector_id') || query.get('sectorId'), status: query.get('status') });
+  return { success: true, count: volunteers.length, volunteers };
+});
+route('POST', '/api/volunteers/register', ANY, async ({ user, body }) =>
+  reply(201, { success: true, volunteer: await actions.registerVolunteer(user, body) })
+);
+route('PUT', '/api/volunteers/:id', ANY, async ({ user, params, body }) => ({
+  success: true,
+  volunteer: await actions.setVolunteerStatus(user, params.id, body)
+}));
+
+// ---- diagnostics & operational intelligence
+route('GET', '/api/database/stats', null, async () => ({
+  success: true,
+  database: await db.getStats()
+}));
+route('GET', '/api/reports/intelligence', null, async () => ({
+  success: true,
+  intelligence: await actions.getOperationalIntelligence()
+}));
+
+// ------------------------------------------------------------------ static hosting (../resqcore/dist)
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.map': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+  '.webp': 'image/webp', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf',
+  '.txt': 'text/plain; charset=utf-8', '.webmanifest': 'application/manifest+json'
+};
+
+function sendFile(req, res, filePath, stat, immutable) {
+  res.writeHead(200, {
+    'Content-Type': MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream',
+    'Content-Length': stat.size,
+    'Cache-Control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache'
+  });
+  if (req.method === 'HEAD') return res.end();
+  fs.createReadStream(filePath).pipe(res);
+}
+
+function serveStatic(req, res, pathname) {
+  if (!STATIC_DIR || (req.method !== 'GET' && req.method !== 'HEAD')) return false;
+  let rel;
+  try {
+    rel = decodeURIComponent(pathname);
+  } catch {
+    sendJSON(res, 400, { success: false, error: 'Bad request path' });
+    return true;
+  }
+  const full = path.resolve(STATIC_DIR, '.' + path.posix.normalize('/' + rel));
+  if (full !== STATIC_DIR && !full.startsWith(STATIC_DIR + path.sep)) {
+    sendJSON(res, 403, { success: false, error: 'Forbidden' });
+    return true;
+  }
+
+  try {
+    const stat = fs.statSync(full);
+    if (stat.isFile()) {
+      sendFile(req, res, full, stat, /^\/assets\//.test(pathname));
+      return true;
+    }
+  } catch (_) { /* fall through to SPA fallback */ }
+
+  if (path.extname(pathname) === '') {
+    const index = path.join(STATIC_DIR, 'index.html');
+    sendFile(req, res, index, fs.statSync(index), false);
+    return true;
+  }
+  return false;
+}
+
+// ------------------------------------------------------------------ server
+
 const server = http.createServer(async (req, res) => {
-  // Global CORS handling
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  const started = Date.now();
+  applySecurityHeaders(res);
+  applyCors(req, res);
+
+  let url;
+  try {
+    url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  } catch {
+    return sendJSON(res, 400, { success: false, error: 'Bad request' });
+  }
+  const pathname = url.pathname;
+  const isApi = pathname === '/api' || pathname.startsWith('/api/');
+
+  if (isApi) {
+    res.on('finish', () => {
+      if (pathname !== '/api/health') console.log(`[HTTP] ${req.method} ${pathname} ${res.statusCode} ${Date.now() - started}ms`);
+    });
+  }
 
   if (req.method === 'OPTIONS') {
+    if (req.headers.origin && !isOriginAllowed(req.headers.origin) && !sameHostOrigin(req.headers.origin, req)) {
+      res.writeHead(403);
+      return res.end();
+    }
     res.writeHead(204);
-    res.end();
-    return;
+    return res.end();
   }
 
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const pathname = url.pathname;
-  const method = req.method;
-
-  // 1. Health & Diagnostics
-  if (pathname === '/api/health' && method === 'GET') {
-    return sendJSON(res, 200, {
-      status: 'online',
-      service: 'ResQCore Unified Real-Time Backend',
-      version: '2.0.0',
-      connectedSSE: eventBus.getSSEClientCount(),
-      connectedWS: wsServer ? wsServer.getConnectedCount() : 0,
-      activeIncidents: store.getIncidents().length,
-      teamsCount: store.getTeams().length,
-      timestamp: new Date().toISOString()
-    });
-  }
-
-  // 2. Server-Sent Events (SSE) Real-Time Stream (Command Center & Web Clients)
-  if (pathname === '/api/stream' && method === 'GET') {
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*'
-    });
-
-    res.write(`data: ${JSON.stringify({ type: 'connected', time: Date.now(), service: 'ResQCore Real-Time Event Stream' })}\n\n`);
-    eventBus.addSSEClient(res);
-
-    req.on('close', () => {
-      eventBus.removeSSEClient(res);
-    });
-    return;
-  }
-
-  // 3. Citizen SOS & Emergency Reports
-  if (pathname === '/api/citizen/sos' && method === 'POST') {
-    const data = await parseBody(req);
-    const newIncident = store.addIncident({
-      id: data.id,
-      title: data.title || 'Emergency SOS',
-      type: data.type || 'General',
-      location: data.location,
-      fullAddress: data.fullAddress,
-      description: data.description,
-      contactNumber: data.contactNumber,
-      citizenName: data.citizenName || 'Citizen User',
-      coordinates: data.coordinates,
-      severity: data.severity || 'High',
-      isCitizenSOS: true
-    });
-
-    // Real-Time Fanout to Command Center & Rescue Units
-    eventBus.emitRealtime('new_citizen_sos', newIncident);
-    console.log(`[Backend SOS] New SOS created by ${newIncident.citizenName} (${newIncident.id}) at ${newIncident.location}`);
-
-    return sendJSON(res, 201, { success: true, incident: newIncident, request: newIncident });
-  }
-
-  // 4. Incident Status Check by ID (For Citizen App tracking)
-  if (pathname.startsWith('/api/citizen/status/') && method === 'GET') {
-    const id = pathname.replace('/api/citizen/status/', '');
-    const found = store.getIncidentById(id);
-    if (found) {
-      return sendJSON(res, 200, { success: true, request: found, incident: found });
-    } else {
-      return sendJSON(res, 404, { error: 'Request not found' });
+  if (!isApi) {
+    if (serveStatic(req, res, pathname)) return;
+    if (pathname === '/' && !STATIC_DIR) {
+      return sendJSON(res, 200, { service: 'ResQCore Unified Real-Time Backend', version: VERSION, message: 'API only - no built Command Center found (set STATIC_DIR).' });
     }
+    return sendJSON(res, 404, { success: false, error: 'Not found' });
   }
 
-  // 5. Citizen's My-Requests
-  if ((pathname === '/api/citizen/requests' || pathname === '/api/citizen/my-requests') && method === 'GET') {
-    const phone = url.searchParams.get('phone');
-    let requests = store.getIncidents();
-    if (phone) {
-      const cleanPhone = phone.replace(/[^0-9]/g, '');
-      requests = requests.filter((r) => {
-        const rPhone = (r.contactNumber || '').replace(/[^0-9]/g, '');
-        return rPhone.includes(cleanPhone) || cleanPhone.includes(rPhone);
-      });
-    }
-    return sendJSON(res, 200, { success: true, count: requests.length, requests });
-  }
-
-  // 6. Get All Incidents (For Command Center & Rescue Apps)
-  if (pathname === '/api/incidents' && method === 'GET') {
-    const status = url.searchParams.get('status');
-    let list = store.getIncidents();
-    if (status && status !== 'All') {
-      list = list.filter((i) => i.status.toLowerCase() === status.toLowerCase());
-    }
-    return sendJSON(res, 200, { success: true, count: list.length, incidents: list });
-  }
-
-  // 7. Get Single Incident
-  if (pathname.startsWith('/api/incidents/') && method === 'GET') {
-    const id = pathname.replace('/api/incidents/', '');
-    const found = store.getIncidentById(id);
-    if (found) {
-      return sendJSON(res, 200, { success: true, incident: found });
-    }
-    return sendJSON(res, 404, { error: 'Incident not found' });
-  }
-
-  // 8. Command Center Dispatches Team to Incident
-  if (pathname === '/api/command/dispatch' && method === 'POST') {
-    const { requestId, incidentId, teamName, eta, notes } = await parseBody(req);
-    const targetId = requestId || incidentId;
-
-    if (!targetId) {
-      return sendJSON(res, 400, { error: 'Missing incidentId or requestId' });
+  try {
+    const { route: matched, params, pathMatched } = matchRoute(req.method, pathname);
+    if (!matched) {
+      if (pathMatched) throw new HttpError(405, 'Method not allowed');
+      throw notFound('Endpoint not found');
     }
 
-    const result = store.assignTeam(targetId, teamName || 'Alpha 01', eta || '10 min', notes);
-    if (!result) {
-      return sendJSON(res, 404, { error: 'Incident not found' });
+    const auth = authenticate(req, url);
+    if (matched.roles) {
+      if (!auth) throw unauthorized();
+      if (!matched.roles.includes(auth.user.role)) throw forbidden(`This endpoint requires role: ${matched.roles.join(' or ')}`);
     }
 
-    const { incident, team } = result;
+    const hasBody = req.method === 'POST' || req.method === 'PUT';
+    const body = hasBody ? await readJson(req) : {};
 
-    // Real-Time Fanout
-    eventBus.emitRealtime('incident_assigned', {
-      incidentId: incident.id,
-      incident,
-      teamName: incident.assignedTeam,
-      eta: incident.eta,
-      dispatchUpdate: `${incident.assignedTeam} dispatched · ETA ${incident.eta}`,
-      team
+    const result = await matched.handler({
+      req,
+      res,
+      url,
+      params,
+      body,
+      query: url.searchParams,
+      user: auth?.user || null
     });
-
-    console.log(`[Backend Dispatch] ${incident.assignedTeam} assigned to ${incident.id} (ETA: ${incident.eta})`);
-    return sendJSON(res, 200, { success: true, incident, request: incident });
-  }
-
-  // 9. Command Center Verifies Incident
-  if (pathname === '/api/command/verify' && method === 'POST') {
-    const { incidentId } = await parseBody(req);
-    const incident = store.verifyIncident(incidentId);
-    if (!incident) {
-      return sendJSON(res, 404, { error: 'Incident not found' });
+    if (result === HANDLED) return;
+    if (result instanceof Reply) return sendJSON(res, result.status, result.body);
+    return sendJSON(res, 200, { success: true, ...result });
+  } catch (err) {
+    if (err instanceof HttpError) {
+      const headers = err.status === 429 && err.extra?.retryAfter ? { 'Retry-After': String(err.extra.retryAfter) } : {};
+      return sendJSON(res, err.status, { success: false, error: err.message, ...err.extra }, headers);
     }
-
-    eventBus.emitRealtime('incident_verified', { incidentId: incident.id, incident });
-    return sendJSON(res, 200, { success: true, incident });
+    console.error(`[HTTP] Unhandled error on ${req.method} ${pathname}:`, err);
+    return sendJSON(res, 500, { success: false, error: 'Internal server error' });
   }
-
-  // 10. Update Incident Status (e.g. from Rescue Team: 'Responding', 'On site', 'Resolved')
-  if (pathname === '/api/incidents/update' && method === 'POST') {
-    const { incidentId, status, notes, teamName } = await parseBody(req);
-    const updated = store.updateIncidentStatus(incidentId, status, notes, teamName);
-
-    if (!updated) {
-      return sendJSON(res, 404, { error: 'Incident not found' });
-    }
-
-    eventBus.emitRealtime('incident_status_changed', {
-      incidentId: updated.id,
-      incident: updated,
-      status: updated.status,
-      notes: notes || updated.substatus
-    });
-
-    console.log(`[Backend Incident] Status for ${updated.id} updated to '${updated.status}'`);
-    return sendJSON(res, 200, { success: true, incident: updated });
-  }
-
-  // 11. Rescue Team Reports New Incident from Field
-  if (pathname === '/api/incidents/report' && method === 'POST') {
-    const data = await parseBody(req);
-    const newIncident = store.addIncident({
-      title: data.title || 'Field Incident',
-      location: data.location || 'Tactical Sector',
-      severity: data.severity || 'Medium',
-      description: data.description || '',
-      status: 'Responding',
-      assignedTeam: data.teamName || 'Field Unit',
-      fieldReport: `Field reconnaissance reported by ${data.reporter || 'Field Team'}`,
-      coordinates: data.coordinates,
-      isCitizenSOS: false,
-      isRescueSOS: false
-    });
-
-    eventBus.emitRealtime('incident_reported', { incident: newIncident });
-    return sendJSON(res, 201, { success: true, incident: newIncident });
-  }
-
-  // 12. Rescue Team Field SOS Beacon
-  if (pathname === '/api/teams/sos' && method === 'POST') {
-    const data = await parseBody(req);
-    const sosIncident = store.addIncident({
-      title: `🚨 TACTICAL SOS: ${data.teamName || 'Rescue Unit'} In Distress`,
-      location: data.location || 'GPS Pin',
-      severity: 'Critical',
-      description: data.notes || `Emergency distress beacon triggered by ${data.operatorName || 'Rescuer'} (${data.teamName || 'Team Alpha'}). Immediate reinforcement required.`,
-      status: 'Escalated',
-      assignedTeam: 'ALL AVAILABLE UNITS',
-      coordinates: data.coordinates,
-      isRescueSOS: true,
-      isCitizenSOS: false
-    });
-
-    store.createSosEvent({
-      teamId: data.teamId,
-      teamName: data.teamName,
-      operatorName: data.operatorName,
-      lat: data.coordinates?.lat || data.coordinates?.latitude,
-      lng: data.coordinates?.lng || data.coordinates?.longitude,
-      locationText: data.location,
-      notes: data.notes,
-      incidentId: sosIncident.id
-    });
-
-    eventBus.emitRealtime('new_rescue_sos', {
-      sosIncident,
-      teamId: data.teamId,
-      teamName: data.teamName,
-      coordinates: data.coordinates
-    });
-
-    return sendJSON(res, 201, { success: true, incident: sosIncident });
-  }
-
-  // 13. Teams List & Telemetry
-  if (pathname === '/api/teams' && method === 'GET') {
-    return sendJSON(res, 200, { success: true, teams: store.getTeams() });
-  }
-
-  if (pathname === '/api/teams/telemetry' && method === 'POST') {
-    const { teamId, lat, lng, battery, status } = await parseBody(req);
-    const updatedTeam = store.updateTeamTelemetry(teamId, { lat, lng, battery, status });
-
-    if (updatedTeam) {
-      eventBus.emitRealtime('team_telemetry_update', {
-        teamId: updatedTeam.id,
-        team: updatedTeam,
-        lat: updatedTeam.coordinates.lat,
-        lng: updatedTeam.coordinates.lng,
-        battery: updatedTeam.battery,
-        status: updatedTeam.status
-      });
-      return sendJSON(res, 200, { success: true, team: updatedTeam });
-    }
-    return sendJSON(res, 404, { error: 'Team not found' });
-  }
-
-  // 14. Tactical Communications & Chat
-  if (pathname === '/api/chat/messages' && method === 'GET') {
-    const channel = url.searchParams.get('channel') || 'all';
-    return sendJSON(res, 200, { success: true, messages: store.getMessages(channel) });
-  }
-
-  if (pathname === '/api/chat/send' && method === 'POST') {
-    const { channel, sender, role, text, locationTag, attachmentUrl, isAlert, initials, isSelf } = await parseBody(req);
-    if (!text || !text.trim()) {
-      return sendJSON(res, 400, { error: 'Message text cannot be empty' });
-    }
-
-    const { channel: targetChannel, message } = store.addMessage(channel || 'ernakulam-command', {
-      sender,
-      role,
-      text,
-      locationTag,
-      attachmentUrl,
-      isAlert,
-      initials,
-      isSelf
-    });
-
-    eventBus.emitRealtime('new_chat_message', {
-      channel: targetChannel,
-      message
-    });
-
-    return sendJSON(res, 201, { success: true, channel: targetChannel, message });
-  }
-
-  // 15. Command Center Broadcasts & Alerts
-  if (pathname === '/api/alerts' && method === 'GET') {
-    return sendJSON(res, 200, { success: true, alerts: store.getAlerts() });
-  }
-
-  if (pathname === '/api/command/broadcast' && method === 'POST') {
-    const { recipients, message, severity, issuedBy } = await parseBody(req);
-    if (!message || !message.trim()) {
-      return sendJSON(res, 400, { error: 'Broadcast message cannot be empty' });
-    }
-
-    const newAlert = store.addBroadcast({ recipients, message, severity, issuedBy });
-
-    eventBus.emitRealtime('emergency_broadcast', {
-      alert: newAlert,
-      message,
-      severity,
-      recipients
-    });
-
-    console.log(`[Backend Broadcast] Dispatched to ${recipients}: "${message.slice(0, 50)}..."`);
-    return sendJSON(res, 201, { success: true, alert: newAlert });
-  }
-
-  // 16. Shelters & Evacuees
-  if (pathname === '/api/shelters' && method === 'GET') {
-    return sendJSON(res, 200, { success: true, shelters: store.getShelters() });
-  }
-
-  if (pathname === '/api/shelters/update' && method === 'POST') {
-    const { shelterId, occupied } = await parseBody(req);
-    const shelter = store.updateShelterOccupancy(shelterId, occupied);
-    if (shelter) {
-      eventBus.emitRealtime('shelter_updated', { shelter });
-      return sendJSON(res, 200, { success: true, shelter });
-    }
-    return sendJSON(res, 404, { error: 'Shelter not found' });
-  }
-
-  // 17. Tactical Sectors API
-  if (pathname === '/api/sectors' && method === 'GET') {
-    const theater = url.searchParams.get('theater');
-    const sectors = store.getSectors(theater);
-    return sendJSON(res, 200, { success: true, count: sectors.length, sectors });
-  }
-
-  if (pathname.startsWith('/api/sectors/') && method === 'GET') {
-    const id = pathname.replace('/api/sectors/', '');
-    const sector = store.getSectorById(id);
-    if (!sector) return sendJSON(res, 404, { error: 'Sector not found' });
-
-    const sectorIncidents = store.getIncidents().filter((i) => i.sectorId === id);
-    const sectorTeams = store.getTeams().filter((t) => t.sectorId === id);
-    return sendJSON(res, 200, { success: true, sector, incidents: sectorIncidents, teams: sectorTeams });
-  }
-
-  if (pathname.startsWith('/api/sectors/') && (method === 'PUT' || method === 'POST')) {
-    const id = pathname.replace('/api/sectors/', '');
-    const data = await parseBody(req);
-    const updated = store.updateSector(id, data);
-    if (!updated) return sendJSON(res, 404, { error: 'Sector not found' });
-    eventBus.emitRealtime('sector_status_changed', { sector: updated });
-    return sendJSON(res, 200, { success: true, sector: updated });
-  }
-
-  // 18. SQLite Database Stats & Diagnostics
-  if (pathname === '/api/database/stats' && method === 'GET') {
-    return sendJSON(res, 200, { success: true, database: store.getDatabaseStats() });
-  }
-
-  // VOLUNTEER ROUTES
-  if (pathname === '/api/volunteers' && method === 'GET') {
-    const sector_id = url.searchParams.get('sector_id');
-    const status = url.searchParams.get('status');
-    const volunteers = store.getVolunteers({ sector_id, status });
-    return sendJSON(res, 200, { success: true, count: volunteers.length, volunteers });
-  }
-
-  if (pathname === '/api/volunteers/register' && method === 'POST') {
-    const data = await parseBody(req);
-    if (!data.name) return sendJSON(res, 400, { error: 'Name is required' });
-    const volunteer = store.addVolunteer(data);
-    eventBus.emitRealtime('volunteer_registered', { volunteer });
-    console.log(`[Backend Volunteers] New volunteer: ${volunteer.name} (${volunteer.id})`);
-    return sendJSON(res, 201, { success: true, volunteer });
-  }
-
-  if (pathname.startsWith('/api/volunteers/') && method === 'PUT') {
-    const id = pathname.replace('/api/volunteers/', '');
-    const { status } = await parseBody(req);
-    const volunteer = store.updateVolunteerStatus(id, status);
-    if (!volunteer) return sendJSON(res, 404, { error: 'Volunteer not found' });
-    eventBus.emitRealtime('volunteer_updated', { volunteer });
-    return sendJSON(res, 200, { success: true, volunteer });
-  }
-
-  // TELEMETRY ROUTES
-  if (pathname === '/api/telemetry/live' && method === 'GET') {
-    const liveData = store.getLiveTelemetry();
-    return sendJSON(res, 200, { success: true, telemetry: liveData });
-  }
-
-  if (pathname.startsWith('/api/telemetry/history/') && method === 'GET') {
-    const teamId = pathname.replace('/api/telemetry/history/', '');
-    const limit = parseInt(url.searchParams.get('limit') || '100', 10);
-    const history = store.getTelemetryHistory(teamId, limit);
-    return sendJSON(res, 200, { success: true, teamId, history });
-  }
-
-  // SOS EVENTS ROUTES
-  if (pathname === '/api/sos/active' && method === 'GET') {
-    const events = store.getActiveSosEvents();
-    return sendJSON(res, 200, { success: true, count: events.length, events });
-  }
-
-  if (pathname.startsWith('/api/sos/resolve/') && method === 'POST') {
-    const id = pathname.replace('/api/sos/resolve/', '');
-    const resolved = store.resolveSosEvent(id);
-    if (!resolved) return sendJSON(res, 404, { error: 'SOS event not found' });
-    eventBus.emitRealtime('sos_resolved', { sosId: id, event: resolved });
-    return sendJSON(res, 200, { success: true, event: resolved });
-  }
-
-  // 404 fallback
-  return sendJSON(res, 404, { error: 'Endpoint not found', path: pathname });
 });
 
-// Attach WebSocket Server to the same HTTP server
-const wsServer = new SimpleWebSocketServer(server, { path: '/ws' });
+// ------------------------------------------------------------------ WebSocket
+
+const wsServer = new SimpleWebSocketServer(server, {
+  path: '/ws',
+  authenticate: (req, url) => {
+    const auth = authenticate(req, url);
+    return auth ? { id: auth.user.id, role: auth.user.role, name: auth.user.name, teamId: auth.user.teamId } : null;
+  },
+  isOriginAllowed: (origin, req) => isOriginAllowed(origin) || sameHostOrigin(origin, req)
+});
 eventBus.setWebSocketServer(wsServer);
 
-// Handle inbound WebSocket messages from mobile or command center clients
-wsServer.onMessage((msg, client) => {
+wsServer.onMessage(async (msg, client) => {
+  const type = msg.type || msg.event;
+  const data = msg.data && typeof msg.data === 'object' ? msg.data : msg;
   try {
-    const type = msg.type || msg.event;
-    const data = msg.data || msg;
+    const user = client.viewer;
+    if (!user) throw unauthorized('Authentication required');
+    const need = (roles) => {
+      if (!roles.includes(user.role)) throw forbidden(`'${type}' requires role: ${roles.join(' or ')}`);
+    };
 
-    if (type === 'chat_message') {
-      const { channel, message } = store.addMessage(data.channel || 'ernakulam-command', {
-        sender: data.sender || client.meta.name || 'Mobile Operative',
-        role: data.role || client.role,
-        text: data.text,
-        locationTag: data.locationTag,
-        attachmentUrl: data.attachmentUrl
-      });
-      eventBus.emitRealtime('new_chat_message', { channel, message });
-    } else if (type === 'telemetry') {
-      const updated = store.updateTeamTelemetry(data.teamId || client.meta.teamId, data);
-      if (updated) {
-        eventBus.emitRealtime('team_telemetry_update', {
-          teamId: updated.id,
-          team: updated,
-          lat: updated.coordinates.lat,
-          lng: updated.coordinates.lng,
-          battery: updated.battery,
-          status: updated.status
-        });
-      }
-    } else if (type === 'sos') {
-      const sosInc = store.addIncident({
-        title: `🚨 TACTICAL SOS: ${data.teamName || 'Field Unit'} Beacon`,
-        location: data.location || 'GPS Pin',
-        severity: 'High',
-        description: data.text || 'Emergency SOS beacon triggered in tactical field operations.',
-        status: 'Escalated',
-        assignedTeam: 'NEAREST AVAILABLE UNITS',
-        coordinates: data.coordinates
-      });
-      eventBus.emitRealtime('new_rescue_sos', { sosIncident: sosInc });
-    } else if (type === 'update_status') {
-      const updated = store.updateIncidentStatus(data.incidentId, data.status, data.notes, data.teamName);
-      if (updated) {
-        eventBus.emitRealtime('incident_status_changed', {
-          incidentId: updated.id,
-          incident: updated,
-          status: updated.status,
-          notes: data.notes
-        });
-      }
+    switch (type) {
+      case 'chat_message':
+        need(STAFF);
+        await actions.sendChat(user, data);
+        break;
+      case 'telemetry':
+        need(RESCUE);
+        await actions.postTelemetry(user, data);
+        break;
+      case 'sos':
+        need(RESCUE);
+        await actions.createRescueSos(user, data);
+        break;
+      case 'update_status':
+        need(STAFF);
+        await actions.updateIncidentStatus(user, data);
+        break;
+      default:
+        throw badRequest(`Unknown message type '${type}'`);
     }
+    wsServer.sendToClient(client, { event: 'ack', data: { type, ok: true, ref: data.ref ?? data.id ?? null } });
   } catch (err) {
-    console.warn('[WebSocket Inbound Error]:', err.message);
+    const status = err instanceof HttpError ? err.status : 500;
+    if (!(err instanceof HttpError)) console.error('[WebSocket Inbound Error]:', err);
+    wsServer.sendToClient(client, {
+      event: 'error',
+      data: { type, status, message: err instanceof HttpError ? err.message : 'Internal server error', ref: data.ref ?? data.id ?? null }
+    });
   }
 });
 
+// ------------------------------------------------------------------ lifecycle
+
+await db.init();
+await initLiveOsFromDb();
+startLiveAgingTimer(30_000);
+startFeeds();
+
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`============================================================`);
-  console.log(`[ResQCore Unified Backend] RUNNING ON http://0.0.0.0:${PORT}`);
-  console.log(`- REST API Gateway:      http://localhost:${PORT}/api/health`);
-  console.log(`- Real-Time SSE Stream:  http://localhost:${PORT}/api/stream`);
-  console.log(`- Real-Time WebSocket:   ws://localhost:${PORT}/ws`);
-  console.log(`- Citizen SOS Endpoint:  http://localhost:${PORT}/api/citizen/sos`);
-  console.log(`- Command Dispatch:      http://localhost:${PORT}/api/command/dispatch`);
-  console.log(`- Tactical Chat:         http://localhost:${PORT}/api/chat/send`);
-  console.log(`- Teams Telemetry:       http://localhost:${PORT}/api/teams/telemetry`);
-  console.log(`============================================================`);
+  console.log('============================================================');
+  console.log(`[ResQCore Backend v${VERSION}] listening on http://0.0.0.0:${PORT}  (${IS_PROD ? 'production' : 'development'})`);
+  console.log(`- Static UI:  ${STATIC_DIR || 'none (API only)'}`);
+  console.log(`- CORS:       ${ALLOWED_ORIGINS.length ? ALLOWED_ORIGINS.join(', ') : 'same-origin only'}`);
+  console.log('============================================================');
 });
+
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[Lifecycle] ${signal} received, shutting down...`);
+  stopFeeds();
+  stopLiveAgingTimer();
+  const force = setTimeout(() => process.exit(1), 5000);
+  force.unref();
+  server.close(async () => {
+    await db.close();
+    process.exit(0);
+  });
+  for (const client of eventBus.sseClients) { try { client.res.end(); } catch (_) { /* ignore */ } }
+  for (const client of wsServer.clients) { try { client.socket.end(); } catch (_) { /* ignore */ } }
+  server.closeIdleConnections?.();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

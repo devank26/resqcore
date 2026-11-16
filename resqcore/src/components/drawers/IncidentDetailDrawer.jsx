@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   X,
   ShieldAlert,
@@ -19,14 +19,33 @@ export const IncidentDetailDrawer = () => {
     isDrawerOpen,
     setIsDrawerOpen,
     selectedIncident,
-    verifyIncident
+    teams,
+    verifyIncident,
+    assignTeamToIncident,
+    updateIncidentStatus
   } = useApp();
+  const [selectedTeamId, setSelectedTeamId] = useState('');
+  const [etaInput, setEtaInput] = useState('15 min');
+  const [dispatching, setDispatching] = useState(false);
 
   if (!isDrawerOpen || !selectedIncident) return null;
 
-  const isVerified = selectedIncident.status === 'Verified' || selectedIncident.status === 'Responding' || selectedIncident.status === 'On site';
   const isEscalated = selectedIncident.status === 'Escalated';
+  const isResolved = selectedIncident.status === 'Resolved';
   const isUnverified = selectedIncident.status === 'Unverified';
+  const hasAssignedTeam = Boolean(selectedIncident.assignedTeam && selectedIncident.assignedTeam !== 'Unassigned');
+  const isVerifiedAwaitingDispatch = !isUnverified && !isEscalated && !isResolved && !hasAssignedTeam;
+  const isTeamAssigned = !isUnverified && !isEscalated && !isResolved && hasAssignedTeam;
+  const assignedTeamObj = teams.find(
+    (t) =>
+      (selectedIncident.assignedTeamId && t.id === selectedIncident.assignedTeamId) ||
+      t.name === selectedIncident.assignedTeam
+  );
+  const availableTeams = teams.filter((t) => t.status === 'Available' || t.status === 'Standby');
+  const effectiveSelectedTeamId =
+    selectedTeamId && availableTeams.some((t) => t.id === selectedTeamId)
+      ? selectedTeamId
+      : availableTeams[0]?.id || '';
 
   return (
     <div
@@ -217,6 +236,77 @@ export const IncidentDetailDrawer = () => {
           )}
         </div>
 
+        {/* Citizen / field requested resources & other needs */}
+        {(() => {
+          const reqList = Array.isArray(selectedIncident.requestedResources)
+            ? selectedIncident.requestedResources
+            : selectedIncident.requestedResources && typeof selectedIncident.requestedResources === 'object'
+              ? Object.entries(selectedIncident.requestedResources)
+                  .filter(([, q]) => Number(q) > 0)
+                  .map(([k, q]) => ({ resourceId: k, name: k, quantity: q }))
+              : [];
+          const otherNeeds = Array.isArray(selectedIncident.otherNeeds) ? selectedIncident.otherNeeds : [];
+          if (reqList.length === 0 && otherNeeds.length === 0) return null;
+          return (
+            <div
+              style={{
+                backgroundColor: '#0A1324',
+                border: '1px solid #1E2E4C',
+                borderRadius: '10px',
+                padding: '10px 12px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px'
+              }}
+            >
+              {reqList.length > 0 && (
+                <>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#93C5FD', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Requested Resources
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                    {reqList.map((res, idx) => (
+                      <span
+                        key={res.resourceId || res.name || idx}
+                        style={{
+                          fontSize: '11.5px',
+                          fontWeight: 600,
+                          color: '#E2E8F0',
+                          backgroundColor: '#13223D',
+                          border: '1px solid #2563EB55',
+                          borderRadius: '999px',
+                          padding: '4px 10px'
+                        }}
+                      >
+                        {res.name || res.resourceId} × {res.quantity}
+                      </span>
+                    ))}
+                  </div>
+                </>
+              )}
+              {otherNeeds.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '2px' }}>
+                  {otherNeeds.map((need, idx) => (
+                    <span
+                      key={idx}
+                      style={{
+                        fontSize: '11px',
+                        color: '#FDE68A',
+                        backgroundColor: 'rgba(245,158,11,0.12)',
+                        border: '1px solid rgba(245,158,11,0.35)',
+                        borderRadius: '999px',
+                        padding: '3px 9px'
+                      }}
+                    >
+                      {need}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {/* STATUS ACTIONS & ASSIGNED CARDS */}
         <div style={{ marginTop: 'auto', paddingTop: '10px' }}>
           {/* STATE A: UNVERIFIED */}
@@ -255,8 +345,188 @@ export const IncidentDetailDrawer = () => {
             </div>
           )}
 
-          {/* STATE B: VERIFIED / TEAM ASSIGNED */}
-          {isVerified && (
+          {/* STATE B1: VERIFIED · AWAITING TEAM ASSIGNMENT */}
+          {isVerifiedAwaitingDispatch && (
+            <div
+              style={{
+                backgroundColor: 'rgba(59, 130, 246, 0.08)',
+                border: '1px solid rgba(59, 130, 246, 0.3)',
+                borderRadius: '12px',
+                padding: '16px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <StatusBadge status={selectedIncident.status} />
+                  <span style={{ fontSize: '12px', fontWeight: 600, color: '#93C5FD' }}>
+                    Awaiting Team Dispatch
+                  </span>
+                </div>
+              </div>
+
+              {availableTeams.length > 0 ? (
+                <>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '11px', fontWeight: 600, color: '#94A3B8', textTransform: 'uppercase' }}>
+                      Select Available Rescue Team ({availableTeams.length})
+                    </label>
+                    <select
+                      value={effectiveSelectedTeamId}
+                      onChange={(e) => setSelectedTeamId(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '9px 10px',
+                        borderRadius: '8px',
+                        backgroundColor: '#091122',
+                        border: '1px solid #1E2E4B',
+                        color: '#FFFFFF',
+                        fontSize: '13px',
+                        fontWeight: 600
+                      }}
+                    >
+                      {availableTeams.map((team) => (
+                        <option key={team.id} value={team.id}>
+                          {team.name} · {team.specialization || 'SAR'} ({team.responders || 4} resp)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '11px', fontWeight: 600, color: '#94A3B8', textTransform: 'uppercase' }}>
+                      Estimated Time of Arrival (ETA)
+                    </label>
+                    <input
+                      type="text"
+                      value={etaInput}
+                      onChange={(e) => setEtaInput(e.target.value)}
+                      placeholder="15 min"
+                      style={{
+                        width: '100%',
+                        padding: '8px 10px',
+                        borderRadius: '8px',
+                        backgroundColor: '#091122',
+                        border: '1px solid #1E2E4B',
+                        color: '#FFFFFF',
+                        fontSize: '13px'
+                      }}
+                    />
+                  </div>
+
+                  <button
+                    disabled={dispatching || !effectiveSelectedTeamId}
+                    onClick={async () => {
+                      if (!effectiveSelectedTeamId) return;
+                      setDispatching(true);
+                      try {
+                        await assignTeamToIncident(effectiveSelectedTeamId, selectedIncident.id, etaInput);
+                      } finally {
+                        setDispatching(false);
+                      }
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px',
+                      width: '100%',
+                      padding: '11px',
+                      borderRadius: '10px',
+                      backgroundColor: '#2563EB',
+                      color: '#FFFFFF',
+                      fontWeight: 600,
+                      fontSize: '13.5px',
+                      opacity: dispatching ? 0.7 : 1
+                    }}
+                  >
+                    <Users size={16} />
+                    <span>{dispatching ? 'Dispatching Team...' : 'Assign & Dispatch Team'}</span>
+                  </button>
+                </>
+              ) : (
+                <div style={{ fontSize: '12px', color: '#CBD5E1', lineHeight: '1.45' }}>
+                  {teams.length === 0
+                    ? 'No active rescue teams online yet. Sign in on the Rescue Team App to register a live team.'
+                    : `All ${teams.length} registered teams are currently deployed on other missions.`}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* STATE B2: TEAM ASSIGNED / RESPONDING / ON SITE */}
+          {isTeamAssigned && (
+            <div
+              style={{
+                backgroundColor: 'rgba(16, 185, 129, 0.08)',
+                border: '1px solid rgba(16, 185, 129, 0.3)',
+                borderRadius: '12px',
+                padding: '16px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <StatusBadge status={selectedIncident.status} />
+                {selectedIncident.eta && (
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#34D399' }}>
+                    ETA {selectedIncident.eta}
+                  </span>
+                )}
+              </div>
+
+              <div style={{ fontSize: '15px', fontWeight: 700, color: '#FFFFFF' }}>
+                Team assigned · {selectedIncident.assignedTeam}
+              </div>
+
+              <div style={{ fontSize: '12px', color: '#94A3B8' }}>
+                {assignedTeamObj
+                  ? `${assignedTeamObj.specialization || 'Search & Rescue'} · ${assignedTeamObj.responders || 4} responders · ${assignedTeamObj.status}`
+                  : (selectedIncident.substatus || 'Unit dispatched and en route')}
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                {selectedIncident.status !== 'On site' && (
+                  <button
+                    onClick={() => updateIncidentStatus(selectedIncident.id, 'On site', `${selectedIncident.assignedTeam} arrived on site`)}
+                    style={{
+                      flex: 1,
+                      padding: '8px 10px',
+                      borderRadius: '8px',
+                      backgroundColor: 'rgba(59, 130, 246, 0.16)',
+                      border: '1px solid rgba(59, 130, 246, 0.35)',
+                      color: '#93C5FD',
+                      fontSize: '12px',
+                      fontWeight: 600
+                    }}
+                  >
+                    Mark On site
+                  </button>
+                )}
+                <button
+                  onClick={() => updateIncidentStatus(selectedIncident.id, 'Resolved', `Resolved by ${selectedIncident.assignedTeam}`)}
+                  style={{
+                    flex: 1,
+                    padding: '8px 10px',
+                    borderRadius: '8px',
+                    backgroundColor: 'rgba(16, 185, 129, 0.18)',
+                    border: '1px solid rgba(16, 185, 129, 0.4)',
+                    color: '#6EE7B7',
+                    fontSize: '12px',
+                    fontWeight: 600
+                  }}
+                >
+                  Mark Resolved
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* STATE B3: RESOLVED */}
+          {isResolved && (
             <div
               style={{
                 backgroundColor: 'rgba(16, 185, 129, 0.08)',
@@ -265,30 +535,16 @@ export const IncidentDetailDrawer = () => {
                 padding: '16px'
               }}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
-                <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#10B981' }} />
-                <span style={{ fontSize: '11px', fontWeight: 600, color: '#10B981' }}>
-                  Verified
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                <CheckCircle size={16} color="#10B981" />
+                <span style={{ fontSize: '14px', fontWeight: 700, color: '#10B981' }}>
+                  Incident Resolved
                 </span>
               </div>
-
-              <div style={{ fontSize: '15px', fontWeight: 700, color: '#FFFFFF' }}>
-                Team assigned · {selectedIncident.assignedTeam || 'Bravo 02'}
-              </div>
-
-              <div style={{ fontSize: '12px', color: '#94A3B8', marginTop: '2px' }}>
-                Water rescue · 8 responders
-              </div>
-
-              <div
-                style={{
-                  fontSize: '20px',
-                  fontWeight: 700,
-                  color: '#FFFFFF',
-                  marginTop: '12px'
-                }}
-              >
-                ETA 12 min
+              <div style={{ fontSize: '12px', color: '#CBD5E1' }}>
+                {selectedIncident.assignedTeam
+                  ? `Completed by ${selectedIncident.assignedTeam}. Team and allocated resources released.`
+                  : 'Operation completed and closed.'}
               </div>
             </div>
           )}

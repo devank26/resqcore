@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import '../theme/tactical_theme.dart';
 import '../models/app_state.dart';
@@ -22,6 +25,7 @@ class _VolunteersScreenState extends State<VolunteersScreen> {
   List<Map<String, dynamic>> _volunteers = [];
   bool _loading = true;
   String _errorMsg = '';
+  Timer? _refreshTimer;
   String _filterStatus = 'All';
   final TextEditingController _searchController = TextEditingController();
 
@@ -31,24 +35,42 @@ class _VolunteersScreenState extends State<VolunteersScreen> {
   void initState() {
     super.initState();
     _fetchVolunteers();
-    TacticalSyncService.watchVolunteers(_fetchVolunteers);
+    _refreshTimer = Timer.periodic(const Duration(seconds: 30), (_) => _fetchVolunteers());
   }
 
   @override
   void dispose() {
-    TacticalSyncService.stopWatchingVolunteers();
+    _refreshTimer?.cancel();
     _searchController.dispose();
     super.dispose();
   }
 
   Future<void> _fetchVolunteers() async {
-    final list = await TacticalSyncService.fetchVolunteers();
-    if (!mounted) return;
-    setState(() {
-      _volunteers = list;
-      _loading = false;
-      _errorMsg = list.isEmpty ? 'No volunteers are assigned to this team yet.' : '';
-    });
+    for (final host in TacticalSyncService.candidateHosts) {
+      try {
+        final client = HttpClient();
+        client.connectionTimeout = const Duration(seconds: 3);
+        final request = await client.getUrl(Uri.parse('$host/api/volunteers'));
+        TacticalSyncService.applyAuthHeader(request);
+        final response = await request.close();
+        if (response.statusCode == 200) {
+          final body = await response.transform(utf8.decoder).join();
+          final data = jsonDecode(body) as Map<String, dynamic>;
+          final list = (data['volunteers'] as List<dynamic>? ?? [])
+              .map((e) => e as Map<String, dynamic>)
+              .toList();
+          if (mounted) {
+            setState(() {
+              _volunteers = list;
+              _loading = false;
+              _errorMsg = '';
+            });
+          }
+          return;
+        }
+      } catch (_) {}
+    }
+    if (mounted) setState(() { _loading = false; _errorMsg = 'Backend not reachable'; });
   }
 
   Future<void> _registerAsVolunteer() async {
@@ -180,22 +202,38 @@ class _VolunteersScreenState extends State<VolunteersScreen> {
   }
 
   Future<void> _submitVolunteer(String name, String phone, List<String> skills) async {
-    final result = await TacticalSyncService.registerVolunteer(name: name, phone: phone, skills: skills);
-    if (result == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Registration failed. Check your staff access and connection.')),
-        );
-      }
-      return;
+    for (final host in TacticalSyncService.candidateHosts) {
+      try {
+        final client = HttpClient();
+        client.connectionTimeout = const Duration(seconds: 3);
+        final request = await client.postUrl(Uri.parse('$host/api/volunteers/register'));
+        request.headers.contentType = ContentType.json;
+        TacticalSyncService.applyAuthHeader(request);
+        request.write(jsonEncode({
+          'name': name,
+          'phone': phone,
+          'skills': skills,
+          'status': 'Available',
+        }));
+        final response = await request.close();
+        if (response.statusCode == 201) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              backgroundColor: TacticalColors.primary,
+              content: Text('$name registered as volunteer!',
+                  style: const TextStyle(color: Colors.black)),
+            ));
+          }
+          _fetchVolunteers();
+          return;
+        }
+      } catch (_) {}
     }
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        backgroundColor: TacticalColors.primary,
-        content: Text('$name registered as volunteer!', style: const TextStyle(color: Colors.black)),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Registration failed — check backend connection')),
+      );
     }
-    await _fetchVolunteers();
   }
 
   List<Map<String, dynamic>> get _filteredVolunteers {

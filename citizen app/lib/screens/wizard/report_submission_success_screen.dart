@@ -122,7 +122,7 @@ class _ReportSubmissionSuccessScreenState
                           ],
                         ),
                         Text(
-                          'Ref #842',
+                          provider.isDemoMode ? 'Ref #842' : (request?.id ?? 'Live SOS'),
                           style: AppTextStyles.labelSm.copyWith(
                             color: AppColors.textSecondary,
                           ),
@@ -297,7 +297,9 @@ class _ReportSubmissionSuccessScreenState
                                             ),
                                             const SizedBox(width: 4),
                                             Text(
-                                              'DISPATCH ACTIVE',
+                                              provider.isDemoMode
+                                                  ? 'DISPATCH ACTIVE'
+                                                  : 'QUEUED FOR TRIAGE',
                                               style:
                                                   AppTextStyles.labelSm.copyWith(
                                                 fontSize: 9,
@@ -319,7 +321,9 @@ class _ReportSubmissionSuccessScreenState
                                               BorderRadius.circular(6),
                                         ),
                                         child: Text(
-                                          'ETA · 8 MIN',
+                                          provider.isDemoMode
+                                              ? 'ETA · 8 MIN'
+                                              : 'LIVE SYNC',
                                           style: AppTextStyles.labelSm.copyWith(
                                             fontSize: 10,
                                             fontWeight: FontWeight.w700,
@@ -333,7 +337,12 @@ class _ReportSubmissionSuccessScreenState
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
                                       Text(
-                                        'Unit Bravo 02 · Marine Speedboat Assigned',
+                                        provider.isDemoMode
+                                            ? 'Unit Bravo 02 · Marine Speedboat Assigned'
+                                            : (request?.dispatchUpdate ??
+                                                'Submitted · Awaiting Command Center triage'),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
                                         style: AppTextStyles.labelLg.copyWith(
                                           color: Colors.white,
                                           fontWeight: FontWeight.w700,
@@ -342,7 +351,11 @@ class _ReportSubmissionSuccessScreenState
                                       ),
                                       const SizedBox(height: 2),
                                       Text(
-                                        'Navigating Sector 4-B Waterway towards current GPS lock',
+                                        provider.isDemoMode
+                                            ? 'Navigating Sector 4-B Waterway towards current GPS lock'
+                                            : 'Location pinned at ${request?.location ?? provider.currentLocationName}',
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
                                         style: AppTextStyles.bodySm.copyWith(
                                           color: AppColors.textSecondary,
                                           fontSize: 11,
@@ -473,7 +486,9 @@ class _ReportSubmissionSuccessScreenState
                               const SizedBox(width: 8),
                               Expanded(
                                 child: Text(
-                                  '${request?.title ?? "Flood assistance"} · Fort Kochi',
+                                  provider.isDemoMode
+                                      ? '${request?.title ?? "Flood assistance"} · Fort Kochi'
+                                      : '${request?.title ?? "Emergency"} · ${request?.location ?? provider.currentLocationName}',
                                   style: AppTextStyles.labelLg.copyWith(
                                     color: AppColors.textWhite,
                                     fontWeight: FontWeight.w700,
@@ -484,11 +499,54 @@ class _ReportSubmissionSuccessScreenState
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            'Submitted 10 Oct 2026, 09:20 · 1 photo',
+                            provider.isDemoMode
+                                ? 'Submitted 10 Oct 2026, 09:20 · 1 photo'
+                                : 'Submitted ${request?.timeLabel ?? "Just now"}',
                             style: AppTextStyles.bodySm.copyWith(
                               color: AppColors.textSecondary,
                             ),
                           ),
+                          if (request != null &&
+                              request.requestedResources.isNotEmpty) ...[
+                            const SizedBox(height: 12),
+                            Text(
+                              'Requested Resources',
+                              style: AppTextStyles.labelSm.copyWith(
+                                color: AppColors.textSecondary,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Wrap(
+                              spacing: 6,
+                              runSpacing: 6,
+                              children: request.requestedResources
+                                  .map(
+                                    (res) => Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 8, vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: AppColors.primaryContainer
+                                            .withValues(alpha: 0.18),
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color: AppColors.primaryContainer
+                                              .withValues(alpha: 0.45),
+                                        ),
+                                      ),
+                                      child: Text(
+                                        '${res.name} × ${res.quantity}',
+                                        style: AppTextStyles.labelSm.copyWith(
+                                          color: AppColors.primary,
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 11,
+                                        ),
+                                      ),
+                                    ),
+                                  )
+                                  .toList(),
+                            ),
+                          ],
                         ],
                       ),
                     ),

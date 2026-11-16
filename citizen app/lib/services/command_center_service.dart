@@ -1,72 +1,145 @@
 import 'dart:async';
 import 'dart:convert';
-
+import 'dart:io';
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'account_storage_service.dart';
 
 class CommandCenterService {
-  static const String _configuredBaseUrl = String.fromEnvironment('API_BASE_URL');
-  static final List<String> candidateHosts = [
-    if (_configuredBaseUrl.isNotEmpty) _configuredBaseUrl,
-    'http://10.0.2.2:5000',
-    'http://localhost:5000',
-    'http://127.0.0.1:5000',
-  ].toSet().toList();
+  static const String _envApiBaseUrl = String.fromEnvironment('API_BASE_URL');
+  static const String _envCitizenToken = String.fromEnvironment('CITIZEN_TOKEN');
 
-  static String _activeHost = candidateHosts.first;
-  static final Map<String, Timer> _statusPollers = {};
-  static final Map<String, SupabaseClient> _trackingClients = {};
-  static final Map<String, RealtimeChannel> _trackingChannels = {};
-  static RealtimeChannel? _publicAlertsChannel;
-  static void Function(Map<String, dynamic>)? _onPublicAlert;
-
-  static String get activeHost => _activeHost;
-
-  static Map<String, String> _headers({String? trackingToken}) {
-    final headers = <String, String>{};
-    try {
-      final token = Supabase.instance.client.auth.currentSession?.accessToken;
-      if (token != null && token.isNotEmpty) headers['Authorization'] = 'Bearer $token';
-    } catch (_) {}
-    if (trackingToken != null) headers['X-Incident-Tracking-Token'] = trackingToken;
-    return headers;
+  static String get baseUrl {
+    final trimmed = _envApiBaseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    if (trimmed.isNotEmpty) return trimmed;
+    if (kDebugMode) return 'http://10.0.2.2:5000';
+    return '';
   }
 
-  static Future<Map<String, dynamic>?> _request(
-    String method,
-    String path, {
-    Map<String, dynamic>? body,
-    String? trackingToken,
-  }) async {
-    for (final host in [_activeHost, ...candidateHosts].toSet()) {
-      try {
-        final request = http.Request(method, Uri.parse('$host/api$path'))
-          ..headers.addAll(_headers(trackingToken: trackingToken));
-        if (body != null) {
-          request.headers['Content-Type'] = 'application/json';
-          request.body = jsonEncode(body);
-        }
-        final streamed = await request.send().timeout(const Duration(seconds: 8));
-        final response = await http.Response.fromStream(streamed);
-        final decoded = response.body.isEmpty
-            ? <String, dynamic>{}
-            : jsonDecode(response.body) as Map<String, dynamic>;
-        if (response.statusCode >= 200 && response.statusCode < 300) {
-          _activeHost = host;
-          return decoded;
-        }
-        if (response.statusCode == 401 || response.statusCode == 403 || response.statusCode == 404) {
-          debugPrint('[ResQCore] API denied request ($method $path): ${response.statusCode}');
-          return null;
-        }
-      } catch (_) {}
+  static String _authToken = _envCitizenToken;
+  static final Map<String, Timer> _activePollers = {};
+  static WebSocket? _liveSocket;
+  static Timer? _reconnectTimer;
+  static Timer? _pollFallbackTimer;
+  static bool _liveActive = false;
+
+  static String get activeHost => baseUrl;
+  static String get authToken => _authToken;
+
+  static Future<void> restoreSession() async {
+    final saved = await AccountStorageService.loadToken();
+    if (saved.isNotEmpty) {
+      _authToken = saved;
     }
-    return null;
   }
 
-  static Future<bool> checkConnection() async => await _request('GET', '/health') != null;
+  static void setAuthToken(String token) {
+    final cleaned = token.trim();
+    _authToken = cleaned.isNotEmpty ? cleaned : _envCitizenToken;
+  }
 
+  static void _applyAuth(HttpClientRequest request) {
+    if (_authToken.isNotEmpty) {
+      request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $_authToken');
+    }
+  }
+
+  static Map<String, dynamic> _tryDecodeMap(String raw) {
+    if (raw.trim().isEmpty) return <String, dynamic>{};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) return decoded;
+    } catch (_) {}
+    return <String, dynamic>{};
+  }
+
+  /// Check connectivity with the ResQCore Command Center Backend
+  static Future<bool> checkConnection() async {
+    final host = baseUrl;
+    if (host.isEmpty) return false;
+    try {
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 3);
+      final request = await client.getUrl(Uri.parse('$host/api/health'));
+      final response = await request.close();
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Authenticate or register a citizen account via backend /api/auth endpoints
+  static Future<Map<String, dynamic>> authenticateCitizen({
+    required String identifier,
+    String? password,
+    String? name,
+    bool isRegister = false,
+  }) async {
+    final host = baseUrl;
+    if (host.isEmpty) {
+      return {'success': false, 'error': 'API_BASE_URL is not configured'};
+    }
+
+    final payloadMap = <String, dynamic>{
+      'role': 'citizen',
+      'identifier': identifier.trim(),
+    };
+    if (name != null && name.trim().isNotEmpty) {
+      payloadMap['name'] = name.trim();
+    }
+    if (password != null && password.trim().isNotEmpty) {
+      payloadMap['password'] = password.trim();
+    }
+    if (identifier.contains('@')) {
+      payloadMap['email'] = identifier.trim();
+    } else if (identifier.trim().isNotEmpty) {
+      payloadMap['phone'] = identifier.trim();
+    }
+
+    final endpoints = isRegister
+        ? ['/api/auth/register', '/api/auth/login']
+        : ['/api/auth/login'];
+
+    for (final ep in endpoints) {
+      try {
+        final client = HttpClient();
+        client.connectionTimeout = const Duration(seconds: 5);
+        final request = await client.postUrl(Uri.parse('$host$ep'));
+        request.headers.contentType = ContentType.json;
+        _applyAuth(request);
+        request.write(jsonEncode(payloadMap));
+        final response = await request.close();
+        final raw = await response.transform(utf8.decoder).join();
+        final data = _tryDecodeMap(raw);
+
+        if (response.statusCode == 200 || response.statusCode == 201) {
+          final tok = (data['token'] ?? '').toString().trim();
+          if (tok.isNotEmpty) {
+            setAuthToken(tok);
+            await AccountStorageService.saveToken(tok);
+          }
+          return {'success': true, ...data};
+        }
+
+        // If /api/auth/register isn't mounted (404), fall back to /api/auth/login
+        if (response.statusCode == 404 && ep == '/api/auth/register') {
+          continue;
+        }
+
+        return {
+          'success': false,
+          'error': (data['error'] ?? 'Authentication failed (${response.statusCode})')
+              .toString(),
+        };
+      } catch (e) {
+        return {'success': false, 'error': 'Unable to reach server: $e'};
+      }
+    }
+
+    return {'success': false, 'error': 'Authentication failed'};
+  }
+
+  /// Send Citizen Emergency SOS Report to Command Center in Real Time.
+  /// Blocks SOS when GPS coordinates or baseUrl are missing.
   static Future<Map<String, dynamic>?> sendEmergencyReport({
     required String id,
     required String title,
@@ -79,148 +152,283 @@ class CommandCenterService {
     double? latitude,
     double? longitude,
     String severity = 'High',
-  }) {
-    final lat = latitude ?? 30.3165;
-    final lng = longitude ?? 78.0322;
-    return _request('POST', '/citizen/sos', body: {
-      'id': id,
-      'title': title,
-      'type': type,
-      'location': location,
-      'fullAddress': fullAddress,
-      'description': description,
-      'contactNumber': contactNumber,
-      'citizenName': citizenName,
-      'coordinates': {'lat': lat, 'lng': lng, 'latitude': lat, 'longitude': lng},
-      'severity': severity,
-    });
-  }
-
-  static Future<Map<String, dynamic>?> getRequestStatus(String requestId, {String? trackingToken}) async {
-    if (trackingToken == null || trackingToken.isEmpty) return null;
-    return _request('GET', '/citizen/status/${Uri.encodeComponent(requestId)}', trackingToken: trackingToken);
-  }
-
-  static Future<List<Map<String, dynamic>>> fetchAlerts() async {
-    final data = await _request('GET', '/citizen/alerts');
-    final rows = data?['alerts'];
-    return rows is List ? rows.cast<Map<String, dynamic>>() : [];
-  }
-
-  static Future<List<Map<String, dynamic>>> fetchMyRequests(String phoneNumber) async {
-    final data = await _request('GET', '/citizen/my-requests');
-    final rows = data?['requests'];
-    return rows is List ? rows.cast<Map<String, dynamic>>() : [];
-  }
-
-  static Future<void> startTrackingRequest(
-    String requestId, {
-    required String trackingToken,
-    required void Function(Map<String, dynamic> update) onUpdate,
+    List<Map<String, dynamic>>? resources,
   }) async {
-    stopTrackingRequest(requestId);
+    if (latitude == null || longitude == null) {
+      return {'success': false, 'error': 'GPS coordinates are required to send SOS'};
+    }
+    final host = baseUrl;
+    if (host.isEmpty) {
+      return {'success': false, 'error': 'API_BASE_URL is not configured'};
+    }
+
     try {
-      final tokenResponse = await _request('POST', '/citizen/realtime-token', body: {
-        'incidentId': requestId,
-        'trackingToken': trackingToken,
-      });
-      final realtimeToken = tokenResponse?['token']?.toString();
-      final supabaseUrl = const String.fromEnvironment('SUPABASE_URL');
-      final publishableKey = const String.fromEnvironment('SUPABASE_PUBLISHABLE_KEY');
-      if (realtimeToken == null || supabaseUrl.isEmpty || publishableKey.isEmpty) {
-        _startStatusFallback(requestId, trackingToken, onUpdate);
-        return;
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 5);
+      final request = await client.postUrl(Uri.parse('$host/api/citizen/sos'));
+      request.headers.contentType = ContentType.json;
+      _applyAuth(request);
+
+      final bodyMap = <String, dynamic>{
+        'id': id,
+        'title': title,
+        'type': type,
+        'location': location,
+        'fullAddress': fullAddress,
+        'description': description,
+        'contactNumber': contactNumber,
+        'citizenName': citizenName,
+        'coordinates': {
+          'lat': latitude,
+          'lng': longitude,
+          'latitude': latitude,
+          'longitude': longitude,
+        },
+        'severity': severity,
+      };
+      if (resources != null && resources.isNotEmpty) {
+        bodyMap['resources'] = resources;
       }
 
-      final client = SupabaseClient(supabaseUrl, publishableKey);
-      await client.realtime.setAuth(realtimeToken);
-      final channel = client.channel('citizen:$requestId');
-      _trackingClients[requestId] = client;
-      _trackingChannels[requestId] = channel;
-
-      channel.onPostgresChanges(
-        event: PostgresChangeEvent.all,
-        schema: 'public',
-        table: 'incident_tracking_updates',
-        callback: (payload) {
-          if (payload.eventType == PostgresChangeEvent.delete) return;
-          onUpdate(_normalizeTrackingUpdate(payload.newRecord));
-        },
-      );
-      await channel.subscribe((status, error) {
-        if (status == RealtimeSubscribeStatus.channelError || status == RealtimeSubscribeStatus.timedOut) {
-          _startStatusFallback(requestId, trackingToken, onUpdate);
-        }
-      });
-    } catch (_) {
-      _startStatusFallback(requestId, trackingToken, onUpdate);
+      request.write(jsonEncode(bodyMap));
+      final response = await request.close();
+      final responseBody = await response.transform(utf8.decoder).join();
+      final decoded = _tryDecodeMap(responseBody);
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return decoded;
+      }
+      return {
+        'success': false,
+        'error': (decoded['error'] ?? 'Failed with HTTP ${response.statusCode}').toString(),
+      };
+    } catch (e) {
+      return {'success': false, 'error': e.toString()};
     }
   }
 
-  static Map<String, dynamic> _normalizeTrackingUpdate(Map<String, dynamic> row) => {
-    ...row,
-    'id': row['incident_id'],
-    'assignedTeam': row['assigned_team'],
-    'responseSummary': row['response_summary'],
-    'responseDetail': row['response_detail'],
-    'substatus': row['response_detail'],
-    'updatedAt': row['updated_at'],
-  };
+  /// Fetch available dispatchable resource catalog from Command Center backend
+  static Future<List<Map<String, dynamic>>> fetchResources() async {
+    final host = baseUrl;
+    if (host.isEmpty) return [];
+    try {
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 4);
+      final request = await client.getUrl(Uri.parse('$host/api/resources'));
+      _applyAuth(request);
+      final response = await request.close();
+      if (response.statusCode == 200) {
+        final responseBody = await response.transform(utf8.decoder).join();
+        final data = _tryDecodeMap(responseBody);
+        final list = data['resources'] as List<dynamic>?;
+        if (list != null) {
+          return list
+              .whereType<Map>()
+              .map((e) => Map<String, dynamic>.from(e))
+              .toList();
+        }
+      }
+    } catch (_) {}
+    return [];
+  }
 
-  static void _startStatusFallback(
-    String requestId,
-    String trackingToken,
-    void Function(Map<String, dynamic> update) onUpdate,
-  ) {
-    if (_statusPollers[requestId]?.isActive == true) return;
-    _statusPollers[requestId] = Timer.periodic(const Duration(seconds: 12), (_) async {
-      final response = await getRequestStatus(requestId, trackingToken: trackingToken);
-      final update = response?['request'] ?? response?['incident'];
-      if (update is Map<String, dynamic>) onUpdate(update);
-      final status = update is Map ? (update['status'] ?? '').toString().toLowerCase() : '';
-      if (status == 'resolved' || status == 'completed') stopTrackingRequest(requestId);
+  /// Fetch real-time dispatch status for a request ID
+  static Future<Map<String, dynamic>?> getRequestStatus(String requestId) async {
+    final host = baseUrl;
+    if (host.isEmpty) return null;
+    try {
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 3);
+      final request = await client.getUrl(Uri.parse('$host/api/citizen/status/$requestId'));
+      _applyAuth(request);
+      final response = await request.close();
+      if (response.statusCode == 200) {
+        final responseBody = await response.transform(utf8.decoder).join();
+        return jsonDecode(responseBody) as Map<String, dynamic>;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Fetch active alerts & advisories issued by Command Center
+  static Future<List<Map<String, dynamic>>> fetchAlerts() async {
+    final host = baseUrl;
+    if (host.isEmpty) return [];
+    try {
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 3);
+      final request = await client.getUrl(Uri.parse('$host/api/alerts'));
+      _applyAuth(request);
+      final response = await request.close();
+      if (response.statusCode == 200) {
+        final responseBody = await response.transform(utf8.decoder).join();
+        final data = jsonDecode(responseBody) as Map<String, dynamic>;
+        final list = data['alerts'] as List<dynamic>?;
+        if (list != null) {
+          return list.cast<Map<String, dynamic>>();
+        }
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  /// Fetch all requests for a given citizen phone/user
+  static Future<List<Map<String, dynamic>>> fetchMyRequests(String phoneNumber) async {
+    final host = baseUrl;
+    if (host.isEmpty) return [];
+    try {
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 4);
+      final query = phoneNumber.trim().isNotEmpty
+          ? '?phone=${Uri.encodeComponent(phoneNumber.trim())}'
+          : '';
+      final request = await client.getUrl(Uri.parse('$host/api/citizen/my-requests$query'));
+      _applyAuth(request);
+      final response = await request.close();
+      if (response.statusCode == 200) {
+        final responseBody = await response.transform(utf8.decoder).join();
+        final data = jsonDecode(responseBody) as Map<String, dynamic>;
+        final list = data['requests'] as List<dynamic>?;
+        if (list != null) {
+          return list.cast<Map<String, dynamic>>();
+        }
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  /// Live updates via WebSocket (/ws) with automatic reconnect & polling only as fallback
+  static void startLiveUpdates({
+    required void Function(String event, Map<String, dynamic> data) onEvent,
+    void Function()? onPollTick,
+  }) {
+    _liveActive = true;
+    _connectLiveSocket(onEvent, onPollTick);
+  }
+
+  static Future<void> _connectLiveSocket(
+    void Function(String event, Map<String, dynamic> data) onEvent,
+    void Function()? onPollTick,
+  ) async {
+    if (!_liveActive) return;
+    final host = baseUrl;
+    if (host.isEmpty) return;
+
+    _reconnectTimer?.cancel();
+    try {
+      final wsBase = host.startsWith('https://')
+          ? host.replaceFirst('https://', 'wss://')
+          : host.replaceFirst('http://', 'ws://');
+      final tokenQ = _authToken.isNotEmpty ? '?token=${Uri.encodeComponent(_authToken)}' : '';
+      final headers = <String, dynamic>{};
+      if (_authToken.isNotEmpty) {
+        headers[HttpHeaders.authorizationHeader] = 'Bearer $_authToken';
+      }
+
+      final ws = await WebSocket.connect('$wsBase/ws$tokenQ', headers: headers)
+          .timeout(const Duration(seconds: 4));
+      _liveSocket = ws;
+
+      // Cancel fallback polling once WebSocket is connected
+      _pollFallbackTimer?.cancel();
+      _pollFallbackTimer = null;
+
+      ws.listen(
+        (raw) {
+          try {
+            final decoded = jsonDecode(raw as String);
+            if (decoded is Map<String, dynamic>) {
+              final event = (decoded['event'] ?? decoded['type'] ?? '').toString();
+              final data = decoded['data'] is Map<String, dynamic>
+                  ? decoded['data'] as Map<String, dynamic>
+                  : decoded;
+              if (event.isNotEmpty) onEvent(event, data);
+            }
+          } catch (_) {}
+        },
+        onDone: () {
+          _liveSocket = null;
+          if (_liveActive) {
+            _startFallbackPolling(onPollTick);
+            _reconnectTimer = Timer(
+                const Duration(seconds: 4), () => _connectLiveSocket(onEvent, onPollTick));
+          }
+        },
+        onError: (_) {
+          _liveSocket = null;
+          if (_liveActive) {
+            _startFallbackPolling(onPollTick);
+            _reconnectTimer = Timer(
+                const Duration(seconds: 4), () => _connectLiveSocket(onEvent, onPollTick));
+          }
+        },
+      );
+      return;
+    } catch (_) {
+      if (_liveActive) {
+        _startFallbackPolling(onPollTick);
+        _reconnectTimer = Timer(
+            const Duration(seconds: 5), () => _connectLiveSocket(onEvent, onPollTick));
+      }
+    }
+  }
+
+  static void _startFallbackPolling(void Function()? onPollTick) {
+    if (onPollTick == null) return;
+    if (_pollFallbackTimer != null && _pollFallbackTimer!.isActive) return;
+    _pollFallbackTimer = Timer.periodic(const Duration(seconds: 6), (_) {
+      onPollTick();
     });
   }
 
-  static void watchPublicAlerts(void Function(Map<String, dynamic> alert) onAlert) {
-    stopWatchingPublicAlerts();
+  static void stopLiveUpdates() {
+    _liveActive = false;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _pollFallbackTimer?.cancel();
+    _pollFallbackTimer = null;
     try {
-      final supabase = Supabase.instance.client;
-      _onPublicAlert = onAlert;
-      _publicAlertsChannel = supabase.channel('citizen:public-alerts');
-      _publicAlertsChannel!
-          .onPostgresChanges(
-            event: PostgresChangeEvent.insert,
-            schema: 'public',
-            table: 'public_alerts',
-            callback: (payload) => _onPublicAlert?.call(payload.newRecord),
-          )
-          .subscribe();
+      _liveSocket?.close();
     } catch (_) {}
+    _liveSocket = null;
   }
 
-  static void stopWatchingPublicAlerts() {
-    final channel = _publicAlertsChannel;
-    _publicAlertsChannel = null;
-    _onPublicAlert = null;
-    if (channel != null) {
-      try { Supabase.instance.client.removeChannel(channel); } catch (_) {}
-    }
+  /// Start fallback tracking for a specific request only when WebSocket isn't open
+  static void startTrackingRequest(
+    String requestId,
+    void Function(Map<String, dynamic> update) onUpdate,
+  ) {
+    stopTrackingRequest(requestId);
+
+    _activePollers[requestId] = Timer.periodic(const Duration(seconds: 5), (timer) async {
+      if (_liveSocket != null && _liveSocket!.readyState == WebSocket.open) {
+        return;
+      }
+      final res = await getRequestStatus(requestId);
+      if (res != null && (res['request'] != null || res['incident'] != null)) {
+        final data = (res['request'] ?? res['incident']) as Map<String, dynamic>;
+        onUpdate(data);
+
+        final status = (data['status'] ?? '').toString().toLowerCase();
+        if (status == 'resolved' || status == 'completed') {
+          timer.cancel();
+          _activePollers.remove(requestId);
+        }
+      }
+    });
   }
 
   static void stopTrackingRequest(String requestId) {
-    _statusPollers.remove(requestId)?.cancel();
-    final channel = _trackingChannels.remove(requestId);
-    final client = _trackingClients.remove(requestId);
-    if (channel != null && client != null) {
-      try { client.removeChannel(channel); } catch (_) {}
-      client.dispose();
+    if (_activePollers.containsKey(requestId)) {
+      _activePollers[requestId]?.cancel();
+      _activePollers.remove(requestId);
     }
   }
 
   static void stopAllTracking() {
-    for (final requestId in _statusPollers.keys.toList()) {
-      stopTrackingRequest(requestId);
+    stopLiveUpdates();
+    for (final timer in _activePollers.values) {
+      timer.cancel();
     }
+    _activePollers.clear();
   }
 }

@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'incident.dart';
 import 'team_member.dart';
 import 'chat_message.dart';
@@ -9,10 +9,14 @@ import 'shelter_model.dart';
 import '../services/tactical_sync_service.dart';
 
 class AppState extends ChangeNotifier {
-  String _userRole = 'Commander';
-  String _userName = 'Devank (HQ Commander)';
-  String _userPhone = '+91 98110 44201';
-  String _teamId = '';
+  static const MethodChannel _batteryChannel =
+      MethodChannel('com.resqcore.rescue/battery');
+
+  String _userRole = 'rescue';
+  String _userName = '';
+  String _userPhone = '';
+  String? _teamId;
+  String _teamName = '';
   bool _isAuthenticated = false;
   bool _isDemoMode = false;
   int _activeTabIndex = 0;
@@ -21,24 +25,34 @@ class AppState extends ChangeNotifier {
 
   // Live GPS telemetry & chat sync timers
   Timer? _telemetryTimer;
-  double _currentLat = 30.5593;
-  double _currentLng = 79.5644;
-  int _currentBattery = 85;
+  Timer? _chatSyncTimer;
+  double? _currentLat;
+  double? _currentLng;
+  int _currentBattery = 100;
+  bool _gpsPermissionRequested = false;
+  bool _locationPermissionDenied = false;
+  String? _locationStatusMessage;
 
-  double get currentLat => _currentLat;
-  double get currentLng => _currentLng;
+  double get currentLat => _currentLat ?? 0.0;
+  double get currentLng => _currentLng ?? 0.0;
   int get currentBattery => _currentBattery;
+  bool get locationPermissionDenied => _locationPermissionDenied;
+  String? get locationStatusMessage => _locationStatusMessage;
 
-  List<Incident> _incidents = Incident.mockIncidents();
-  List<RescueTeam> _teams = RescueTeam.mockTeams();
-  List<ChatMessage> _messages = ChatMessage.mockMessages();
-  List<Shelter> _shelters = Shelter.mockShelters();
-  List<Evacuee> _evacuees = Evacuee.mockEvacuees();
+  List<Incident> _incidents = [];
+  List<RescueTeam> _teams = [];
+  List<ChatMessage> _messages = [];
+  String _activeChatChannel = 'command-net';
+  int _chatMsgSeq = 0;
+  List<Shelter> _shelters = [];
+  List<Evacuee> _evacuees = [];
 
   // Getters
   String get userRole => _userRole;
   String get userName => _userName;
   String get userPhone => _userPhone;
+  String get teamId => _teamId ?? '';
+  String get teamName => _teamName.isNotEmpty ? _teamName : _userName;
   bool get isAuthenticated => _isAuthenticated;
   bool get isDemoMode => _isDemoMode;
   int get activeTabIndex => _activeTabIndex;
@@ -46,52 +60,143 @@ class AppState extends ChangeNotifier {
   bool get sosActive => _sosActive;
 
   List<Incident> get incidents => _incidents;
+  List<Incident> get assignedIncidents => _incidents
+      .where((i) =>
+          i.status != 'Resolved' &&
+          i.isAssignedTo(
+            teamId: _teamId,
+            teamName: _teamName,
+            userName: _userName,
+          ))
+      .toList();
+  Incident? get activeAssignedIncident =>
+      assignedIncidents.isNotEmpty ? assignedIncidents.first : null;
   List<RescueTeam> get teams => _teams;
   List<ChatMessage> get messages => _messages;
+  String get activeChatChannel => _activeChatChannel;
+  String? get directTeamChannel =>
+      (_teamId != null && _teamId!.isNotEmpty) ? 'team-$_teamId' : null;
+  List<ChatMessage> get activeChannelMessages => _isDemoMode
+      ? _messages
+      : _messages
+          .where((m) => m.isBot || m.channel == _activeChatChannel)
+          .toList();
   List<Shelter> get shelters => _shelters;
   List<Evacuee> get evacuees => _evacuees;
 
-  int get affectedTotal => _incidents.fold(0, (total, incident) => total + incident.affectedCount);
-  int get rescuedTotal => _evacuees.where((e) => e.status == 'Rescued').length * 47 + 1;
-  int get missingTotal => _evacuees.where((e) => e.status == 'Missing').length * 7;
+  int get affectedTotal => _isDemoMode
+      ? 247
+      : _incidents.fold<int>(0, (sum, i) => sum + i.affectedCount);
+  int get rescuedTotal => _isDemoMode
+      ? _evacuees.where((e) => e.status == 'Rescued').length * 47 + 1
+      : _evacuees.where((e) => e.status == 'Rescued').length;
+  int get missingTotal => _isDemoMode
+      ? _evacuees.where((e) => e.status == 'Missing').length * 7
+      : _evacuees.where((e) => e.status == 'Missing').length;
 
   // Actions
   void setDemoRole(String role, String phone, String name) {
     _userRole = role;
-    _teamId = '';
     _userPhone = phone;
     _userName = name;
+    _teamId = 'TEAM-ALPHA';
+    _teamName = 'Team Alpha';
+    _currentLat = 30.5593;
+    _currentLng = 79.5644;
+    _locationPermissionDenied = false;
+    _locationStatusMessage = null;
+    _incidents = Incident.mockIncidents();
+    _teams = RescueTeam.mockTeams();
+    _messages = ChatMessage.mockMessages();
+    _shelters = Shelter.mockShelters();
+    _evacuees = Evacuee.mockEvacuees();
     _isAuthenticated = true;
     _isDemoMode = true; // DEMO MODE ACTIVE - Offline simulated mode untouched
     notifyListeners();
   }
 
-  void loginLive({required String role, required String teamId, required String email, required String name}) {
+  void login(String role, String phone, {String? name, String? teamName}) {
+    final cleanPhone = phone.trim();
+    final initialName = (name ?? '').trim().isNotEmpty
+        ? name!.trim()
+        : (cleanPhone.isNotEmpty ? 'Unit $cleanPhone' : 'Rescue Operative');
+    final cleanTeam = (teamName ?? '').trim();
     _userRole = role;
-    _teamId = teamId;
-    _userPhone = email;
-    _userName = name;
-    _isAuthenticated = true;
-    _isDemoMode = false;
+    _userPhone = cleanPhone;
+    _userName = initialName;
+    _teamId = null;
+    _teamName = cleanTeam.isNotEmpty ? cleanTeam : initialName;
+    _currentLat = null;
+    _currentLng = null;
+    _locationPermissionDenied = false;
+    _locationStatusMessage = null;
     _incidents = [];
     _teams = [];
     _messages = [];
+    _activeChatChannel = 'command-net';
     _shelters = [];
     _evacuees = [];
-    _initBackendSync();
+    _isAuthenticated = true;
+    _isDemoMode = false;
     notifyListeners();
+    _authenticateAndSync();
+  }
+
+  Future<void> _authenticateAndSync() async {
+    if (_isDemoMode || !_isAuthenticated) return;
+    try {
+      final auth = await TacticalSyncService.loginRescueTeam(
+        role: _userRole,
+        phone: _userPhone,
+        name: _userName,
+        teamName: _teamName,
+      );
+      if (auth != null) {
+        final userObj = auth['user'] as Map<String, dynamic>?;
+        final teamObj = auth['team'] as Map<String, dynamic>?;
+        final returnedTeamId =
+            (auth['teamId'] ?? userObj?['teamId'] ?? teamObj?['id'])?.toString();
+        final returnedTeamName = teamObj?['name']?.toString();
+        final returnedRole =
+            (auth['role'] ?? userObj?['role'])?.toString();
+        final returnedName = userObj?['name']?.toString();
+
+        if (returnedTeamId != null && returnedTeamId.isNotEmpty) {
+          _teamId = returnedTeamId;
+        }
+        if (returnedTeamName != null && returnedTeamName.isNotEmpty) {
+          _teamName = returnedTeamName;
+        }
+        if (returnedRole != null && returnedRole.isNotEmpty) {
+          _userRole = returnedRole;
+        }
+        if (returnedName != null && returnedName.isNotEmpty) {
+          _userName = returnedName;
+        }
+        notifyListeners();
+      }
+    } catch (_) {}
+    TacticalSyncService.setTeamId(_teamId);
+    await _initBackendSync();
   }
 
   void logout() {
-    final wasLive = !_isDemoMode;
     _isAuthenticated = false;
     _isDemoMode = false;
-    _teamId = '';
-    if (wasLive) {
-      try { Supabase.instance.client.auth.signOut(); } catch (_) {}
-    }
+    _teamId = null;
+    _teamName = '';
+    _activeChatChannel = 'command-net';
+    TacticalSyncService.setTeamId(null);
+    _incidents = [];
+    _teams = [];
+    _messages = [];
+    _activeChatChannel = 'command-net';
+    _shelters = [];
+    _evacuees = [];
     _telemetryTimer?.cancel();
     _telemetryTimer = null;
+    _chatSyncTimer?.cancel();
+    _chatSyncTimer = null;
     TacticalSyncService.disconnectRealtime();
     notifyListeners();
   }
@@ -114,17 +219,20 @@ class AppState extends ChangeNotifier {
       initials: 'SOS',
       role: 'EMERGENCY BEACON',
       time: 'Just now',
-      text: 'EMERGENCY SOS ACTIVATED by $_userName at GPS 30.3165° N, 78.0322° E (Dehradun). Team Alpha dispatched!',
+      text: _isDemoMode
+          ? 'EMERGENCY SOS ACTIVATED by $_userName at GPS 30.3165° N, 78.0322° E (Dehradun). Team Alpha dispatched!'
+          : 'EMERGENCY SOS ACTIVATED by $_userName ($_userRole). Distress beacon transmitted to Command Center.',
       isAlert: true,
       isBot: true,
     );
     _messages.insert(0, alertMsg);
 
     if (!_isDemoMode) {
-      // Dispatch immediately with best available GPS
       Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high).then((pos) {
+        _currentLat = pos.latitude;
+        _currentLng = pos.longitude;
         TacticalSyncService.triggerSos(
-          teamId: _teamId,
+          teamId: teamId,
           teamName: _userRole,
           operatorName: _userName,
           location: 'GPS: ${pos.latitude.toStringAsFixed(4)}°N, ${pos.longitude.toStringAsFixed(4)}°E',
@@ -134,10 +242,14 @@ class AppState extends ChangeNotifier {
         );
       }).catchError((_) {
         TacticalSyncService.triggerSos(
-          teamId: _teamId,
+          teamId: teamId,
           teamName: _userRole,
           operatorName: _userName,
-          location: 'Dehradun / Joshimath Sector',
+          location: _currentLat != null && _currentLng != null
+              ? 'GPS: ${_currentLat!.toStringAsFixed(4)}°N, ${_currentLng!.toStringAsFixed(4)}°E'
+              : 'Live GPS unavailable',
+          lat: _currentLat,
+          lng: _currentLng,
           notes: 'EMERGENCY SOS ACTIVATED by $_userName ($_userRole)',
         );
       });
@@ -151,15 +263,35 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  void addMessage(String text, {String? locationTag}) {
-    if (text.trim().isEmpty) return;
+  void setChatChannel(String channel) {
+    final trimmed = channel.trim();
+    if (trimmed.isEmpty || trimmed == _activeChatChannel) return;
+    _activeChatChannel = trimmed;
+    notifyListeners();
+  }
+
+  void addMessage(String text, {String? locationTag, String? channel}) {
+    final cleanText = text.trim();
+    if (cleanText.isEmpty) return;
+    final targetChannel =
+        (channel != null && channel.trim().isNotEmpty) ? channel.trim() : _activeChatChannel;
+    final initials = _userName
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((s) => s.isNotEmpty)
+        .take(2)
+        .map((s) => s[0].toUpperCase())
+        .join();
     final newMsg = ChatMessage(
-      id: 'MSG-${DateTime.now().millisecondsSinceEpoch}',
+      id: 'MSG-${DateTime.now().millisecondsSinceEpoch}-${++_chatMsgSeq}',
+      channel: targetChannel,
       sender: _userName,
-      initials: _userName.isNotEmpty ? _userName[0].toUpperCase() : 'ME',
+      senderId: _teamId != null ? 'usr-$_teamId' : 'env-rescue',
+      senderRole: 'rescue',
+      initials: initials.isNotEmpty ? initials : 'RT',
       role: _userRole,
       time: 'Just now',
-      text: text,
+      text: cleanText,
       locationTag: locationTag,
       isMe: true,
     );
@@ -167,9 +299,11 @@ class AppState extends ChangeNotifier {
 
     if (!_isDemoMode) {
       TacticalSyncService.sendChatMessage(
+        id: newMsg.id,
+        channel: targetChannel,
         sender: _userName,
         role: _userRole,
-        text: text,
+        text: cleanText,
         locationTag: locationTag,
       );
     }
@@ -184,6 +318,9 @@ class AppState extends ChangeNotifier {
     required String description,
     String? photoAssetPath,
   }) {
+    final coordsText = (_currentLat != null && _currentLng != null)
+        ? '${_currentLat!.toStringAsFixed(4)}° N, ${_currentLng!.toStringAsFixed(4)}° E'
+        : 'Awaiting GPS lock';
     final newIncident = Incident(
       id: 'INC-${_incidents.length + 101}',
       title: title,
@@ -191,10 +328,10 @@ class AppState extends ChangeNotifier {
       timestamp: 'Today · Just now',
       severity: severity,
       status: 'Active',
-      teamAssigned: 'En route / Assigning',
-      eta: '10 min',
-      affectedCount: 12,
-      coordinates: '30.5562° N, 79.5670° E',
+      teamAssigned: _userName,
+      eta: 'Pending',
+      affectedCount: 0,
+      coordinates: _isDemoMode ? '30.5562° N, 79.5670° E' : coordsText,
       description: description,
       substatus: 'Immediate triage in progress',
       photoAssetPath: photoAssetPath ?? 'assets/images/scenarios/earthquake_rubble_collapse.png',
@@ -207,8 +344,10 @@ class AppState extends ChangeNotifier {
         location: location,
         severity: severity,
         description: description,
-        teamName: _userRole,
+        teamName: _userName,
         reporter: _userName,
+        lat: _currentLat,
+        lng: _currentLng,
       );
     }
 
@@ -216,12 +355,18 @@ class AppState extends ChangeNotifier {
   }
 
   void updateIncidentStatus(String incidentId, String status, {String? notes}) {
+    final normalizedBucket =
+        status.toLowerCase() == 'resolved' ? 'Resolved' : 'Active';
     final index = _incidents.indexWhere((i) => i.id == incidentId);
     if (index != -1) {
       final existing = _incidents[index];
       _incidents[index] = existing.copyWith(
-        status: status,
-        substatus: notes ?? (status == 'Resolved' ? 'Completed · Cleared by field team' : existing.substatus),
+        status: normalizedBucket,
+        backendStatus: status,
+        substatus: notes ??
+            (normalizedBucket == 'Resolved'
+                ? 'Completed · Cleared by field team'
+                : 'Status updated to $status'),
       );
     }
 
@@ -229,7 +374,7 @@ class AppState extends ChangeNotifier {
       TacticalSyncService.updateIncidentStatus(
         incidentId: incidentId,
         status: status,
-        teamName: _userRole,
+        teamName: _teamName.isNotEmpty ? _teamName : _userName,
         notes: notes,
       );
     }
@@ -237,42 +382,170 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // --- Realtime backend synchronization ---
+  // --- Real-Time Backend Synchronization ---
   Future<void> _initBackendSync() async {
-    if (_isDemoMode || _teamId.isEmpty) return;
+    if (_isDemoMode) return;
 
+    // 1. Initial Incidents Fetch
     try {
       final remoteIncidents = await TacticalSyncService.fetchIncidents();
-      _incidents = remoteIncidents.map(Incident.fromJson).toList();
-      final remoteTeams = await TacticalSyncService.fetchTeams();
-      _teams = remoteTeams.map(RescueTeam.fromJson).toList();
-      final remoteShelters = await TacticalSyncService.fetchShelters();
-      _shelters = remoteShelters.map((row) => Shelter(
-        id: (row['id'] ?? '').toString(),
-        name: (row['name'] ?? 'Shelter').toString(),
-        location: (row['location'] ?? '').toString(),
-        capacity: (row['capacity'] as num?)?.toInt() ?? 0,
-        occupied: (row['occupied'] as num?)?.toInt() ?? 0,
-        distance: '',
-        amenities: '',
-      )).toList();
-      final remoteMessages = await TacticalSyncService.fetchChatMessages(channel: 'team:$_teamId');
-      _messages = remoteMessages.map((row) => ChatMessage.fromJson(row, currentUserName: _userName)).toList();
-      notifyListeners();
-    } catch (error) {
-      debugPrint('[RescueApp Sync] Initial data sync failed: $error');
+      if (remoteIncidents.isNotEmpty) {
+        final List<Incident> parsed = [];
+        final existingIds = _incidents.map((i) => i.id).toSet();
+
+        for (final item in remoteIncidents) {
+          final inc = Incident.fromJson(item);
+          if (!existingIds.contains(inc.id)) {
+            parsed.add(inc);
+            existingIds.add(inc.id);
+          } else {
+            // Update existing status
+            final idx = _incidents.indexWhere((i) => i.id == inc.id);
+            if (idx != -1) {
+              _incidents[idx] = inc;
+            }
+          }
+        }
+        _incidents = [...parsed, ..._incidents];
+        notifyListeners();
+      }
+    } catch (e) {
+      print('[RescueApp Sync] Incidents sync error: $e');
     }
 
+    // 2. Initial Chat Messages Fetch
+    try {
+      final remoteMsgs = await TacticalSyncService.fetchChatMessages();
+      if (remoteMsgs.isNotEmpty) {
+        final existingIds = _messages.map((m) => m.id).toSet();
+        final List<ChatMessage> parsed = [];
+
+        for (final item in remoteMsgs) {
+          final msg = ChatMessage.fromJson(
+            item,
+            currentUserName: _userName,
+            currentUserRole: 'rescue',
+            currentTeamId: _teamId ?? '',
+          );
+          if (!existingIds.contains(msg.id)) {
+            parsed.add(msg);
+            existingIds.add(msg.id);
+          }
+        }
+        _messages = [..._messages, ...parsed];
+        notifyListeners();
+      }
+    } catch (e) {
+      print('[RescueApp Sync] Chat sync error: $e');
+    }
+
+    // 2.5 Fetch Teams & Shelters from Backend
+    try {
+      final remoteTeams = await TacticalSyncService.fetchTeams();
+      _teams = remoteTeams.map((t) {
+        final coords = t['coordinates'] as Map<String, dynamic>?;
+        final lat = (coords?['lat'] as num?)?.toDouble();
+        final lng = (coords?['lng'] as num?)?.toDouble();
+        final gpsStr = (lat != null && lng != null)
+            ? '${lat.toStringAsFixed(4)}° N, ${lng.toStringAsFixed(4)}° E'
+            : 'Awaiting GPS';
+        final id = (t['id'] ?? '').toString();
+        final name = (t['name'] ?? 'Rescue Unit').toString();
+        return RescueTeam(
+          id: id,
+          name: name,
+          sector: (t['sector'] ?? t['specialty'] ?? 'Field Sector').toString(),
+          callsign: (t['callsign'] ?? id).toString(),
+          frequency: (t['frequency'] ?? 'VHF 156.8').toString(),
+          commanderName: (t['lead'] ?? t['commanderName'] ?? _userName).toString(),
+          commanderPhone: (t['phone'] ?? _userPhone).toString(),
+          commanderExperience: 'Active Field Unit',
+          commanderBloodGroup: 'N/A',
+          commanderAvatar: '',
+          syncedCount: (t['personnel'] as num?)?.toInt() ?? 1,
+          totalCount: (t['personnel'] as num?)?.toInt() ?? 1,
+          status: (t['status'] ?? 'Deployed').toString(),
+          members: [
+            TeamMember(
+              id: '$id-lead',
+              name: (t['lead'] ?? name).toString(),
+              role: (t['specialty'] ?? 'Field Operative').toString(),
+              specialty: (t['specialty'] ?? 'SAR').toString(),
+              batteryLevel: (t['battery'] as num?)?.toInt() ?? 100,
+              status: (t['status'] ?? 'Deployed').toString(),
+              distance: 'Live',
+              gpsCoords: gpsStr,
+              avatarUrl: '',
+              bloodGroup: 'N/A',
+            ),
+          ],
+        );
+      }).toList();
+      notifyListeners();
+    } catch (_) {}
+
+    try {
+      final remoteShelters = await TacticalSyncService.fetchShelters();
+      _shelters = remoteShelters.map((s) {
+        return Shelter(
+          id: (s['id'] ?? '').toString(),
+          name: (s['name'] ?? 'Relief Shelter').toString(),
+          location: (s['sector'] ?? s['location'] ?? '').toString(),
+          capacity: (s['capacity'] as num?)?.toInt() ?? 100,
+          occupied: (s['occupied'] as num?)?.toInt() ?? 0,
+          distance: 'Active',
+          amenities: (s['amenities'] ?? 'Medical, Food, Water').toString(),
+          hasMedical: true,
+        );
+      }).toList();
+      notifyListeners();
+    } catch (_) {}
+
+    // 3. Connect Real-Time WebSocket Event Stream
     TacticalSyncService.connectRealtime(
-      teamId: _teamId,
+      teamId: teamId,
       role: _userRole,
       name: _userName,
-      onEvent: _handleRealtimeEvent,
+      onEvent: (event) {
+        _handleRealtimeEvent(event);
+      },
     );
 
+    // 4. Start GPS telemetry loop — sends real position to backend every 30s
     _telemetryTimer?.cancel();
     _telemetryTimer = Timer.periodic(const Duration(seconds: 30), (_) => _sendGpsTelemetry());
-    _sendGpsTelemetry();
+    _sendGpsTelemetry(); // Send immediately on connect
+
+    // 5. Start real-time chat background sync loop (every 5 seconds)
+    _chatSyncTimer?.cancel();
+    _chatSyncTimer = Timer.periodic(const Duration(seconds: 5), (_) => _syncChatMessages());
+  }
+
+  /// Syncs chat messages periodically from the backend for guaranteed real-time delivery
+  Future<void> _syncChatMessages() async {
+    if (_isDemoMode || !_isAuthenticated) return;
+    try {
+      final remoteMsgs = await TacticalSyncService.fetchChatMessages();
+      if (remoteMsgs.isNotEmpty) {
+        bool changed = false;
+        for (final item in remoteMsgs) {
+          final msg = ChatMessage.fromJson(
+            item,
+            currentUserName: _userName,
+            currentUserRole: 'rescue',
+            currentTeamId: _teamId ?? '',
+          );
+          final exists = _messages.any((m) => m.id == msg.id);
+          if (!exists) {
+            _messages.add(msg);
+            changed = true;
+          }
+        }
+        if (changed) {
+          notifyListeners();
+        }
+      }
+    } catch (_) {}
   }
 
   void _handleRealtimeEvent(Map<String, dynamic> event) {
@@ -280,28 +553,6 @@ class AppState extends ChangeNotifier {
 
     final eventType = event['event']?.toString() ?? event['type']?.toString();
     final data = (event['data'] ?? event) as Map<String, dynamic>;
-
-    if (eventType == 'incidents_sync') {
-      final rows = data['incidents'];
-      if (rows is List) {
-        _incidents = rows.map((row) => Incident.fromJson(Map<String, dynamic>.from(row as Map))).toList();
-        notifyListeners();
-      }
-      return;
-    }
-
-    if (eventType == 'chat_sync') {
-      final rows = data['messages'];
-      if (rows is List) {
-        final existingIds = _messages.map((message) => message.id).toSet();
-        for (final raw in rows) {
-          final message = ChatMessage.fromJson(Map<String, dynamic>.from(raw as Map), currentUserName: _userName);
-          if (!existingIds.contains(message.id)) _messages.add(message);
-        }
-        notifyListeners();
-      }
-      return;
-    }
 
     if (eventType == 'new_citizen_sos' || eventType == 'incident_reported') {
       try {
@@ -330,29 +581,70 @@ class AppState extends ChangeNotifier {
       } catch (err) {
         print('[RescueApp Sync] Error handling new SOS: $err');
       }
+    } else if (eventType == 'incident_verified') {
+      try {
+        final rawInc = (data['incident'] ?? data) as Map<String, dynamic>;
+        final inc = Incident.fromJson(rawInc);
+        final idx = _incidents.indexWhere((i) => i.id == inc.id);
+        if (idx != -1) {
+          _incidents[idx] = inc;
+        } else {
+          _incidents.insert(0, inc);
+        }
+        notifyListeners();
+      } catch (err) {
+        print('[RescueApp Sync] Error handling incident_verified: $err');
+      }
     } else if (eventType == 'incident_assigned') {
       try {
         final targetId = (data['incidentId'] ?? data['incident']?['id'])?.toString();
+        final assignedTid = (data['teamId'] ?? data['incident']?['assignedTeamId'])?.toString();
         final teamName = (data['teamName'] ?? data['incident']?['assignedTeam'])?.toString() ?? 'Assigned Unit';
         final eta = (data['eta'] ?? data['incident']?['eta'])?.toString() ?? '10 min';
 
+        Incident? updatedInc;
+        if (data['incident'] is Map<String, dynamic>) {
+          updatedInc = Incident.fromJson(data['incident'] as Map<String, dynamic>);
+        }
+
         final idx = _incidents.indexWhere((i) => i.id == targetId);
-        if (idx != -1) {
+        if (updatedInc != null) {
+          if (idx != -1) {
+            _incidents[idx] = updatedInc;
+          } else {
+            _incidents.insert(0, updatedInc);
+          }
+        } else if (idx != -1) {
           _incidents[idx] = _incidents[idx].copyWith(
             teamAssigned: teamName,
+            assignedTeamId: assignedTid,
+            backendStatus: 'Responding',
+            status: 'Active',
             eta: eta,
             substatus: '$teamName dispatched · ETA $eta',
           );
+          updatedInc = _incidents[idx];
         }
+
+        final isForMe = (assignedTid != null && assignedTid.isNotEmpty && assignedTid == _teamId) ||
+            (updatedInc != null &&
+                updatedInc.isAssignedTo(
+                  teamId: _teamId,
+                  teamName: _teamName,
+                  userName: _userName,
+                )) ||
+            teamName.toLowerCase() == _teamName.trim().toLowerCase();
 
         _messages.add(
           ChatMessage(
             id: 'DISP-${DateTime.now().millisecondsSinceEpoch}',
             sender: 'COMMAND DISPATCH',
             initials: 'HQ',
-            role: 'DISPATCH ORDER',
+            role: isForMe ? 'ASSIGNED TO YOUR TEAM' : 'DISPATCH ORDER',
             time: 'Just now',
-            text: '📋 DISPATCH ORDER: Incident $targetId assigned to $teamName · ETA $eta.',
+            text: isForMe
+                ? '🚨 MISSION ASSIGNED TO YOUR UNIT ($teamName): Incident $targetId (${updatedInc?.title ?? ''}) · ETA $eta. Open Mission Details now.'
+                : '📋 DISPATCH ORDER: Incident $targetId assigned to $teamName · ETA $eta.',
             isAlert: true,
             isBot: true,
           ),
@@ -363,6 +655,18 @@ class AppState extends ChangeNotifier {
       }
     } else if (eventType == 'incident_status_changed') {
       try {
+        final rawInc = data['incident'];
+        if (rawInc is Map<String, dynamic>) {
+          final parsed = Incident.fromJson(rawInc);
+          final idx = _incidents.indexWhere((i) => i.id == parsed.id);
+          if (idx != -1) {
+            _incidents[idx] = parsed;
+          } else {
+            _incidents.insert(0, parsed);
+          }
+          notifyListeners();
+          return;
+        }
         final targetId = data['incidentId']?.toString();
         final newStatus = data['status']?.toString() ?? 'Active';
         final notes = data['notes']?.toString();
@@ -371,6 +675,7 @@ class AppState extends ChangeNotifier {
         if (idx != -1) {
           _incidents[idx] = _incidents[idx].copyWith(
             status: newStatus.toLowerCase() == 'resolved' ? 'Resolved' : 'Active',
+            backendStatus: newStatus,
             substatus: notes ?? 'Status updated to $newStatus',
           );
           notifyListeners();
@@ -378,19 +683,21 @@ class AppState extends ChangeNotifier {
       } catch (_) {}
     } else if (eventType == 'new_chat_message') {
       try {
-        final msgData = (data['message'] ?? data) as Map<String, dynamic>;
-        final msg = ChatMessage.fromJson(msgData, currentUserName: _userName);
-
-        final idx = _messages.indexWhere((m) =>
-          m.id == msg.id ||
-          (m.isMe && m.text == msg.text && (m.sender == msg.sender || msg.sender.contains(m.sender)))
+        final rawMsg = (data['message'] ?? data) as Map<String, dynamic>;
+        final msgData = Map<String, dynamic>.from(rawMsg);
+        if (data['channel'] != null) {
+          msgData['channel'] ??= data['channel'];
+        }
+        final msg = ChatMessage.fromJson(
+          msgData,
+          currentUserName: _userName,
+          currentUserRole: 'rescue',
+          currentTeamId: _teamId ?? '',
         );
 
-        if (idx == -1) {
+        final exists = _messages.any((m) => m.id == msg.id);
+        if (!exists) {
           _messages.add(msg);
-          notifyListeners();
-        } else if (_messages[idx].id.startsWith('MSG-')) {
-          _messages[idx] = msg;
           notifyListeners();
         }
       } catch (err) {
@@ -401,8 +708,13 @@ class AppState extends ChangeNotifier {
         final rawList = (data['messages'] as List<dynamic>? ?? []);
         bool changed = false;
         for (final raw in rawList) {
-          final msg = ChatMessage.fromJson(raw as Map<String, dynamic>, currentUserName: _userName);
-          if (!_messages.any((m) => m.id == msg.id || (m.isMe && m.text == msg.text))) {
+          final msg = ChatMessage.fromJson(
+            raw as Map<String, dynamic>,
+            currentUserName: _userName,
+            currentUserRole: 'rescue',
+            currentTeamId: _teamId ?? '',
+          );
+          if (!_messages.any((m) => m.id == msg.id)) {
             _messages.add(msg);
             changed = true;
           }
@@ -492,19 +804,66 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  Future<void> _refreshBatteryLevel() async {
+    try {
+      final level = await _batteryChannel.invokeMethod<int>('getBatteryLevel');
+      if (level != null && level >= 0 && level <= 100) {
+        _currentBattery = level;
+      }
+    } catch (_) {
+      // Platform channel unavailable on non-Android hosts
+    }
+  }
+
   /// Sends real GPS + battery telemetry to backend every 30 seconds
   Future<void> _sendGpsTelemetry() async {
     if (_isDemoMode || !_isAuthenticated) return;
+    if (teamId.isEmpty) return;
+
+    await _refreshBatteryLevel();
+
     try {
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        _locationPermissionDenied = true;
+        _locationStatusMessage = 'Location services disabled.';
+        notifyListeners();
+        return;
+      }
+
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied && !_gpsPermissionRequested) {
+        _gpsPermissionRequested = true;
+        permission = await Geolocator.requestPermission();
+      }
+
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        _locationPermissionDenied = true;
+        _locationStatusMessage = permission == LocationPermission.deniedForever
+            ? 'Location permission permanently denied in system settings.'
+            : 'Location permission denied.';
+        notifyListeners();
+        return;
+      }
+
+      _locationPermissionDenied = false;
+      _locationStatusMessage = null;
+
       final pos = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       ).timeout(const Duration(seconds: 5));
       _currentLat = pos.latitude;
       _currentLng = pos.longitude;
 
-      // Update local team Alpha members with this live position
+      final telemetryStatus = _sosActive
+          ? 'SOS'
+          : (assignedIncidents.isNotEmpty ? 'Deployed' : 'Available');
+
       if (_teams.isNotEmpty) {
-        final t = _teams.first;
+        final idx = _teams.indexWhere((t) => t.id == teamId);
+        final targetIdx = idx != -1 ? idx : 0;
+        final t = _teams[targetIdx];
         final updatedMembers = t.members.map((m) {
           return TeamMember(
             id: m.id,
@@ -512,7 +871,9 @@ class AppState extends ChangeNotifier {
             role: m.role,
             specialty: m.specialty,
             batteryLevel: _currentBattery,
-            status: _sosActive ? 'SOS Active' : 'Active On-Site',
+            status: _sosActive
+                ? 'SOS Active'
+                : (assignedIncidents.isNotEmpty ? 'Active On-Site' : 'Available'),
             distance: 'Current Device',
             gpsCoords: '${pos.latitude.toStringAsFixed(4)}° N, ${pos.longitude.toStringAsFixed(4)}° E',
             avatarUrl: m.avatarUrl,
@@ -520,7 +881,7 @@ class AppState extends ChangeNotifier {
           );
         }).toList();
 
-        _teams[0] = RescueTeam(
+        _teams[targetIdx] = RescueTeam(
           id: t.id,
           name: t.name,
           sector: t.sector,
@@ -533,31 +894,37 @@ class AppState extends ChangeNotifier {
           commanderAvatar: t.commanderAvatar,
           syncedCount: t.syncedCount,
           totalCount: t.totalCount,
-          status: _sosActive ? 'SOS Active' : 'OPR-READY',
+          status: telemetryStatus,
           members: updatedMembers,
         );
         notifyListeners();
       }
 
       await TacticalSyncService.sendTelemetry(
-        teamId: _teamId,
+        teamId: teamId,
         lat: pos.latitude,
         lng: pos.longitude,
         battery: _currentBattery,
-        status: _sosActive ? 'SOS Active' : 'Deployed',
+        status: telemetryStatus,
       );
       print('[AppState GPS] Telemetry: ${pos.latitude.toStringAsFixed(4)}, ${pos.longitude.toStringAsFixed(4)}');
-    } catch (_) {
-      // GPS unavailable — send last known coordinates
-      try {
-        await TacticalSyncService.sendTelemetry(
-          teamId: _teamId,
-          lat: _currentLat,
-          lng: _currentLng,
-          battery: _currentBattery,
-          status: _sosActive ? 'SOS Active' : 'Deployed',
-        );
-      } catch (__) {}
+    } catch (e) {
+      _locationStatusMessage = 'Unable to acquire GPS fix: $e';
+      notifyListeners();
+      if (_currentLat != null && _currentLng != null) {
+        final telemetryStatus = _sosActive
+            ? 'SOS'
+            : (assignedIncidents.isNotEmpty ? 'Deployed' : 'Available');
+        try {
+          await TacticalSyncService.sendTelemetry(
+            teamId: teamId,
+            lat: _currentLat!,
+            lng: _currentLng!,
+            battery: _currentBattery,
+            status: telemetryStatus,
+          );
+        } catch (__) {}
+      }
     }
   }
 }

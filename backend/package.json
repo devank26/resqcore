@@ -1,13 +1,17 @@
 {
   "name": "resqcore-backend",
-  "version": "1.0.0",
+  "version": "3.0.0",
   "description": "Unified Real-Time Backend for ResQCore Disaster Management Platform",
   "main": "server.js",
   "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node test-integration.js",
+    "test": "node --test services/osEngine/*.test.js services/intelligence.test.js",
     "drill": "node live-platform-test.js"
   },
   "keywords": [
@@ -20,6 +24,6 @@
   "author": "ResQCore Engineering Team",
   "license": "ISC",
   "dependencies": {
-    "@supabase/supabase-js": "^2.119.0"
+    "pg": "^8.23.1"
   }
 }

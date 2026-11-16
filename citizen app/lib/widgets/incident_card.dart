@@ -212,6 +212,35 @@ class IncidentCard extends StatelessWidget {
                 ),
               ],
             ),
+            if (request.requestedResources.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: request.requestedResources
+                    .map(
+                      (res) => Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: AppColors.primaryContainer.withValues(alpha: 0.16),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                            color: AppColors.primaryContainer.withValues(alpha: 0.4),
+                          ),
+                        ),
+                        child: Text(
+                          '${res.name} ×${res.quantity}',
+                          style: AppTextStyles.labelSm.copyWith(
+                            color: AppColors.primary,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
             const SizedBox(height: 12),
 
             // Fleet Update Strip

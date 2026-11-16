@@ -8,12 +8,16 @@ import {
   Radio,
   Settings,
   ShieldAlert,
-  Activity
+  Cpu,
+  Layers
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { formatOperationalShortDate, useCurrentDate } from '../../utils/dateUtils';
 
 export const Sidebar = () => {
   const { activeTab, setActiveTab, incidents, isDemoMode, user } = useApp();
+  const now = useCurrentDate();
+  const currentYear = now.getFullYear();
 
   const navItems = [
     { id: 'command-center', label: 'Command Center', icon: LayoutDashboard },
@@ -21,6 +25,8 @@ export const Sidebar = () => {
     { id: 'incidents', label: 'Incidents', icon: AlertTriangle, badge: incidents.length.toString() },
     { id: 'teams', label: 'Teams', icon: Users },
     { id: 'reports', label: 'Reports', icon: BarChart3 },
+    { id: 'os-engine', label: 'OS Monitor', icon: Cpu },
+    { id: 'scheduler-lab', label: 'Scheduler Lab', icon: Layers },
     { id: 'communication', label: 'Communication', icon: Radio },
     { id: 'settings', label: 'Settings', icon: Settings }
   ];
@@ -207,8 +213,8 @@ export const Sidebar = () => {
             }}
           >
             {isDemoMode
-              ? 'Kerala monsoon 2026'
-              : (user?.district ? `${user.district.split(',')[0]} response 2026` : 'Uttarakhand response 2026')}
+              ? `Kerala monsoon ${currentYear}`
+              : (user?.district ? `${user.district.split(',')[0]} response ${currentYear}` : `Uttarakhand response ${currentYear}`)}
           </div>
           <div
             style={{
@@ -217,7 +223,7 @@ export const Sidebar = () => {
               marginTop: '2px'
             }}
           >
-            09 Oct · Operational period 04
+            {formatOperationalShortDate(now)} · Operational period 04
           </div>
         </div>
 

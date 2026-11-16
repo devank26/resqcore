@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../providers/rescue_provider.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text_styles.dart';
 
@@ -7,6 +9,10 @@ class InboxScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final provider = context.watch<RescueProvider>();
+    final isDemo = provider.isDemoMode;
+    final liveUpdatesCount = provider.allRequests.length + provider.liveAlerts.length;
+
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       child: Column(
@@ -29,7 +35,7 @@ class InboxScreen extends StatelessWidget {
                   borderRadius: BorderRadius.circular(999),
                 ),
                 child: Text(
-                  '2 UNREAD',
+                  isDemo ? '2 UNREAD' : '$liveUpdatesCount UPDATES',
                   style: AppTextStyles.labelSm.copyWith(
                     color: AppColors.primary,
                     fontWeight: FontWeight.w700,
@@ -49,57 +55,123 @@ class InboxScreen extends StatelessWidget {
           ),
           const SizedBox(height: 18),
 
-          _buildNotificationItem(
-            isUnread: true,
-            icon: Icons.directions_boat,
-            iconBg: AppColors.primaryContainer.withValues(alpha: 0.2),
-            iconColor: AppColors.primary,
-            title: 'Bravo 02 deployed to your location',
-            body:
-                'Speedboat rescue team en route via Kochi Backwaters basin. Expected arrival window: 12 minutes.',
-            time: '09:32',
-            imageThumbnail: 'assets/images/scenarios/flood_river_boat.png',
-          ),
-          const SizedBox(height: 10),
+          if (!isDemo) ...[
+            if (liveUpdatesCount == 0)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceContainer,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: AppColors.strokeBorder),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'No live notifications yet',
+                      style: AppTextStyles.labelLg.copyWith(
+                        color: AppColors.textWhite,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Submit an SOS report or wait for Command Center advisories to receive live updates here.',
+                      style: AppTextStyles.bodySm.copyWith(
+                        color: AppColors.textSecondary,
+                        height: 1.4,
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else ...[
+              ...provider.allRequests.map(
+                (req) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: _buildNotificationItem(
+                    isUnread: true,
+                    icon: req.dispatchIcon,
+                    iconBg: AppColors.primaryContainer.withValues(alpha: 0.2),
+                    iconColor: AppColors.primary,
+                    title: '${req.id} · ${req.title}',
+                    body: req.requestedResources.isNotEmpty
+                        ? '${req.dispatchUpdate}\nRequested: ${req.requestedResources.map((r) => '${r.name} x${r.quantity}').join(', ')}'
+                        : req.dispatchUpdate,
+                    time: req.timeLabel,
+                  ),
+                ),
+              ),
+              ...provider.liveAlerts.map(
+                (alert) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: _buildNotificationItem(
+                    isUnread: true,
+                    icon: Icons.warning_amber_rounded,
+                    iconBg: AppColors.tertiaryContainer.withValues(alpha: 0.2),
+                    iconColor: AppColors.tertiary,
+                    title: (alert['title'] ?? 'Command Advisory').toString(),
+                    body: (alert['message'] ?? alert['description'] ?? '').toString(),
+                    time: (alert['time'] ?? alert['createdAt'] ?? 'Live').toString(),
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: 24),
+          ] else ...[
+            _buildNotificationItem(
+              isUnread: true,
+              icon: Icons.directions_boat,
+              iconBg: AppColors.primaryContainer.withValues(alpha: 0.2),
+              iconColor: AppColors.primary,
+              title: 'Bravo 02 deployed to your location',
+              body:
+                  'Speedboat rescue team en route via Kochi Backwaters basin. Expected arrival window: 12 minutes.',
+              time: '09:32',
+              imageThumbnail: 'assets/images/scenarios/flood_river_boat.png',
+            ),
+            const SizedBox(height: 10),
 
-          _buildNotificationItem(
-            isUnread: true,
-            icon: Icons.verified,
-            iconBg: AppColors.secondaryContainer.withValues(alpha: 0.2),
-            iconColor: AppColors.secondary,
-            title: 'Report verified by Response Command',
-            body:
-                'Your flood report RQ-261010-0842 was triaged and escalated to High Priority by Zone 04 Command.',
-            time: '09:21',
-            imageThumbnail: 'assets/images/scenarios/command_radar_dispatch.png',
-          ),
-          const SizedBox(height: 10),
+            _buildNotificationItem(
+              isUnread: true,
+              icon: Icons.verified,
+              iconBg: AppColors.secondaryContainer.withValues(alpha: 0.2),
+              iconColor: AppColors.secondary,
+              title: 'Report verified by Response Command',
+              body:
+                  'Your flood report RQ-261010-0842 was triaged and escalated to High Priority by Zone 04 Command.',
+              time: '09:21',
+              imageThumbnail: 'assets/images/scenarios/command_radar_dispatch.png',
+            ),
+            const SizedBox(height: 10),
 
-          _buildNotificationItem(
-            isUnread: false,
-            icon: Icons.pets,
-            iconBg: const Color(0xFF10B981).withValues(alpha: 0.2),
-            iconColor: const Color(0xFF34D399),
-            title: 'K9 Search Team Sigma deployed in Sector 4',
-            body:
-                'Search dog unit deployed along wooded perimeter to trace isolated civilians.',
-            time: '07:45',
-            imageThumbnail: 'assets/images/scenarios/forest_k9_search.png',
-          ),
-          const SizedBox(height: 10),
+            _buildNotificationItem(
+              isUnread: false,
+              icon: Icons.pets,
+              iconBg: const Color(0xFF10B981).withValues(alpha: 0.2),
+              iconColor: const Color(0xFF34D399),
+              title: 'K9 Search Team Sigma deployed in Sector 4',
+              body:
+                  'Search dog unit deployed along wooded perimeter to trace isolated civilians.',
+              time: '07:45',
+              imageThumbnail: 'assets/images/scenarios/forest_k9_search.png',
+            ),
+            const SizedBox(height: 10),
 
-          _buildNotificationItem(
-            isUnread: false,
-            icon: Icons.check_circle_outline,
-            iconBg: AppColors.surfaceContainerHigh,
-            iconColor: AppColors.success,
-            title: 'Evacuation request resolved',
-            body:
-                'Request RQ-261009-0801 for Amaravathy, Fort Kochi marked as completed yesterday.',
-            time: 'Yesterday · 17:15',
-            imageThumbnail: 'assets/images/scenarios/village_flood_evac.png',
-          ),
-          const SizedBox(height: 24),
+            _buildNotificationItem(
+              isUnread: false,
+              icon: Icons.check_circle_outline,
+              iconBg: AppColors.surfaceContainerHigh,
+              iconColor: AppColors.success,
+              title: 'Evacuation request resolved',
+              body:
+                  'Request RQ-261009-0801 for Amaravathy, Fort Kochi marked as completed yesterday.',
+              time: 'Yesterday · 17:15',
+              imageThumbnail: 'assets/images/scenarios/village_flood_evac.png',
+            ),
+            const SizedBox(height: 24),
+          ],
         ],
       ),
     );

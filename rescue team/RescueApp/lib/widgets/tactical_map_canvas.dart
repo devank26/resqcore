@@ -11,7 +11,20 @@ import '../models/team_member.dart';
 // Default center: Joshimath, Uttarakhand (the operational theater)
 const LatLng _kDefaultCenter = LatLng(30.5593, 79.5644);
 const double _kDefaultZoom = 11.0;
-const String _kGoogleMapsApiKey = 'AIzaSyAMaBxMmCY1r2TmqoMZUm2-v8FfhE1n44g';
+const String _kGoogleMapsApiKey =
+    String.fromEnvironment('GOOGLE_MAPS_API_KEY', defaultValue: '');
+
+String _googleTileUrl({required bool satellite}) {
+  final lyrs = satellite ? 'y' : 'm';
+  final keyParam = _kGoogleMapsApiKey.isNotEmpty ? '&key=$_kGoogleMapsApiKey' : '';
+  return 'https://mt{s}.google.com/vt/lyrs=$lyrs&x={x}&y={y}&z={z}$keyParam';
+}
+
+String _fallbackTileUrl({required bool satellite}) {
+  return satellite
+      ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+      : 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}';
+}
 
 
 class TacticalMapCanvas extends StatefulWidget {
@@ -417,11 +430,11 @@ class _TacticalMapCanvasState extends State<TacticalMapCanvas> {
                 },
               ),
               children: [
-                // Base tile layer using Google Maps API
+                // Base tile layer using Google Maps tiles with ArcGIS fallback
                 TileLayer(
-                  urlTemplate: _showSatellite
-                      ? 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&key=$_kGoogleMapsApiKey'
-                      : 'https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&key=$_kGoogleMapsApiKey',
+                  urlTemplate: _googleTileUrl(satellite: _showSatellite),
+                  fallbackUrl: _fallbackTileUrl(satellite: _showSatellite),
+                  subdomains: const ['0', '1', '2', '3'],
                   userAgentPackageName: 'com.rescueteam.app',
                   maxZoom: 20,
                   tileProvider: NetworkTileProvider(),

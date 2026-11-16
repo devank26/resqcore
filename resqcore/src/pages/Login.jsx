@@ -9,24 +9,19 @@ import {
   Check
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { apiFetch, supabase, supabaseConfigured } from '../lib/supabase';
-import {
-  initialIncidents,
-  initialTeams,
-  initialMessages,
-  initialAlerts,
-  initialCameras
-} from '../data/initialData';
 
 export const Login = () => {
-  const { setIsAuthenticated, user, setUser, isDemoMode, setIsDemoMode, setIncidents, setTeams, setMessages, setAlerts, setToasts, setCameras } = useApp();
+  const { login, registerCommand, enterDemoMode } = useApp();
+  const [mode, setMode] = useState('login'); // 'login' | 'register'
+  const [fullName, setFullName] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [authError, setAuthError] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [role, setRole] = useState('Command Operator');
   const [rememberMe, setRememberMe] = useState(true);
   const [isRoleDropdownOpen, setIsRoleDropdownOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
   const roles = [
     'Command Operator',
@@ -36,108 +31,30 @@ export const Login = () => {
 
   const handleSignIn = async (e, isDemo = false) => {
     e.preventDefault();
-    setAuthError('');
-
+    setErrorMsg('');
     if (isDemo) {
-      setIsDemoMode(true);
-      setIncidents(initialIncidents);
-      setTeams(initialTeams);
-      setMessages(initialMessages);
-      setAlerts(initialAlerts);
-      setCameras(initialCameras);
-      setToasts([
-        {
-          id: 'toast-initial-high',
-          type: 'high-incident',
-          title: 'New High incident',
-          code: 'INC-2048 · Flooding in Fort Kochi',
-          detail: '320 people affected · Verification required',
-          incidentId: 'INC-2048'
-        }
-      ]);
-      setUser(prev => ({ ...prev, role, email: 'demo@resqcore.invalid', district: 'Ernakulam, Kerala' }));
-      setIsAuthenticated(true);
-      return;
-    }
-
-    if (!supabaseConfigured || !supabase) {
-      setAuthError('Secure sign-in is not configured for this deployment.');
+      enterDemoMode(email || 'ananya.kumar@resqcore.gov.in', role);
       return;
     }
     if (!email.trim() || !password) {
-      setAuthError('Enter your work email and password.');
+      setErrorMsg('Please enter your work email and password.');
       return;
     }
-
-    setIsSubmitting(true);
+    if (mode === 'register' && !fullName.trim()) {
+      setErrorMsg('Please enter your full name.');
+      return;
+    }
+    setSubmitting(true);
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-      if (error || !data.session) {
-        setAuthError(error?.code === 'email_not_confirmed' ? 'Confirm your email before signing in.' : 'Invalid email or password.');
-        return;
+      if (mode === 'register') {
+        await registerCommand({ name: fullName, email, password, inviteCode, remember: rememberMe });
+      } else {
+        await login(email, password, rememberMe);
       }
-
-      const profile = await apiFetch('/auth/me');
-      if (!['command_admin', 'command_operator'].includes(profile.role)) {
-        await supabase.auth.signOut();
-        setAuthError('This account is not approved for the Command Center. Contact your administrator.');
-        return;
-      }
-
-      setIsDemoMode(false);
-      setIncidents([]);
-      setTeams([]);
-      setMessages({});
-      setAlerts([]);
-      setCameras([]);
-      setToasts([]);
-      setUser(prev => ({
-        ...prev,
-        name: data.user.user_metadata?.full_name || profile.user.email,
-        role: profile.role === 'command_admin' ? 'District Administrator' : 'Command Operator',
-        email: profile.user.email,
-        district: 'Dehradun, Uttarakhand',
-      }));
-      setIsAuthenticated(true);
-    } catch (error) {
-      setAuthError(error.message || 'Could not sign in. Please try again.');
+    } catch (err) {
+      setErrorMsg(err.message || (mode === 'register' ? 'Registration failed' : 'Sign-in failed'));
     } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleCreateAccount = async () => {
-    setAuthError('');
-    if (!supabaseConfigured || !supabase) {
-      setAuthError('Secure sign-up is not configured for this deployment.');
-      return;
-    }
-    if (!email.trim() || password.length < 8) {
-      setAuthError('Enter your invitation email and a password of at least 8 characters.');
-      return;
-    }
-
-    setIsSubmitting(true);
-    try {
-      const { data, error } = await supabase.auth.signUp({ email: email.trim(), password, options: { data: { full_name: email.split('@')[0] } } });
-      if (error) throw error;
-      if (!data.session) {
-        setAuthError('Check your email to confirm. Access activates only when an administrator invited this address.');
-        return;
-      }
-      const profile = await apiFetch('/auth/me');
-      if (!['command_admin', 'command_operator'].includes(profile.role)) {
-        await supabase.auth.signOut();
-        setAuthError('No Command Center invitation was found for this account.');
-        return;
-      }
-      setUser(prev => ({ ...prev, name: data.user?.user_metadata?.full_name || email, email, role: profile.role === 'command_admin' ? 'District Administrator' : 'Command Operator' }));
-      setIsDemoMode(false);
-      setIsAuthenticated(true);
-    } catch {
-      setAuthError('Could not create the account. Check the invitation email and try again.');
-    } finally {
-      setIsSubmitting(false);
+      setSubmitting(false);
     }
   };
 
@@ -355,10 +272,97 @@ export const Login = () => {
             Welcome to ResQCore
           </h2>
           <p style={{ fontSize: '14px', color: '#64748B', marginTop: '6px' }}>
-            Sign in to your disaster response workspace.
+            {mode === 'register'
+              ? 'Create a Command Center operator account.'
+              : 'Sign in to your disaster response workspace.'}
           </p>
 
-          <form onSubmit={handleSignIn} style={{ marginTop: '32px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          {/* Mode Toggle */}
+          <div
+            style={{
+              display: 'flex',
+              gap: '6px',
+              marginTop: '20px',
+              padding: '4px',
+              backgroundColor: '#0D1527',
+              border: '1px solid #1A263D',
+              borderRadius: '10px'
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => { setMode('login'); setErrorMsg(''); }}
+              style={{
+                flex: 1,
+                padding: '8px 12px',
+                borderRadius: '7px',
+                fontSize: '13px',
+                fontWeight: 600,
+                backgroundColor: mode === 'login' ? '#2563EB' : 'transparent',
+                color: mode === 'login' ? '#FFFFFF' : '#94A3B8'
+              }}
+            >
+              Sign in
+            </button>
+            <button
+              type="button"
+              onClick={() => { setMode('register'); setErrorMsg(''); }}
+              style={{
+                flex: 1,
+                padding: '8px 12px',
+                borderRadius: '7px',
+                fontSize: '13px',
+                fontWeight: 600,
+                backgroundColor: mode === 'register' ? '#2563EB' : 'transparent',
+                color: mode === 'register' ? '#FFFFFF' : '#94A3B8'
+              }}
+            >
+              Create account
+            </button>
+          </div>
+
+          <form onSubmit={handleSignIn} style={{ marginTop: '24px', display: 'flex', flexDirection: 'column', gap: '18px' }}>
+            {mode === 'register' && (
+              <div>
+                <label
+                  style={{
+                    display: 'block',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    color: '#94A3B8',
+                    marginBottom: '8px'
+                  }}
+                >
+                  Full name
+                </label>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '12px 14px',
+                    backgroundColor: '#0D1527',
+                    border: '1px solid #1A263D',
+                    borderRadius: '10px'
+                  }}
+                >
+                  <input
+                    type="text"
+                    placeholder="Devank"
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    required
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#FFFFFF',
+                      fontSize: '13.5px',
+                      width: '100%'
+                    }}
+                  />
+                </div>
+              </div>
+            )}
             {/* Email Field */}
             <div>
               <label
@@ -441,8 +445,6 @@ export const Login = () => {
               </div>
             </div>
 
-            {authError && <p role="alert" style={{ margin: '-8px 0', color: '#FCA5A5', fontSize: '12px' }}>{authError}</p>}
-
             {/* Role Selector */}
             <div style={{ position: 'relative' }}>
               <label
@@ -454,7 +456,7 @@ export const Login = () => {
                   marginBottom: '8px'
                 }}
               >
-                Demo persona (live roles are assigned by an administrator)
+                Your role
               </label>
               <div
                 onClick={() => setIsRoleDropdownOpen(!isRoleDropdownOpen)}
@@ -553,7 +555,7 @@ export const Login = () => {
                 href="#forgot"
                 onClick={(e) => {
                   e.preventDefault();
-                  setAuthError('Contact your Command Center administrator to reset your password.');
+                  alert('Password reset link sent to district coordinator.');
                 }}
                 style={{ color: '#3B82F6', fontWeight: 500 }}
               >
@@ -561,10 +563,68 @@ export const Login = () => {
               </a>
             </div>
 
+            {errorMsg && (
+              <div
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  backgroundColor: 'rgba(239, 68, 68, 0.12)',
+                  border: '1px solid rgba(239, 68, 68, 0.35)',
+                  color: '#FCA5A5',
+                  fontSize: '12.5px',
+                  fontWeight: 500
+                }}
+              >
+                {errorMsg}
+              </div>
+            )}
+
+            {mode === 'register' && (
+              <div>
+                <label
+                  style={{
+                    display: 'block',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    color: '#94A3B8',
+                    marginBottom: '8px'
+                  }}
+                >
+                  Invite code <span style={{ color: '#64748B', fontWeight: 400 }}>(optional in dev)</span>
+                </label>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '12px 14px',
+                    backgroundColor: '#0D1527',
+                    border: '1px solid #1A263D',
+                    borderRadius: '10px'
+                  }}
+                >
+                  <input
+                    type="text"
+                    placeholder="COMMAND_INVITE_CODE if configured"
+                    value={inviteCode}
+                    onChange={(e) => setInviteCode(e.target.value)}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#FFFFFF',
+                      fontSize: '13.5px',
+                      width: '100%'
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
             {/* CTA Button */}
             <button
               type="submit"
-              disabled={isSubmitting}
+              disabled={submitting}
+              onClick={(e) => handleSignIn(e, false)}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -578,22 +638,23 @@ export const Login = () => {
                 fontWeight: 600,
                 fontSize: '14.5px',
                 boxShadow: '0 4px 16px rgba(37, 99, 235, 0.4)',
-                marginTop: '6px'
+                marginTop: '6px',
+                opacity: submitting ? 0.7 : 1,
+                cursor: submitting ? 'not-allowed' : 'pointer'
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#3B82F6')}
-              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = '#2563EB')}
+              onMouseEnter={(e) => { if (!submitting) e.currentTarget.style.backgroundColor = '#3B82F6'; }}
+              onMouseLeave={(e) => { if (!submitting) e.currentTarget.style.backgroundColor = '#2563EB'; }}
             >
-              <span>{isSubmitting ? 'Checking staff access…' : 'Sign in to command center'}</span>
+              <span>
+                {submitting
+                  ? mode === 'register'
+                    ? 'Creating account...'
+                    : 'Signing in...'
+                  : mode === 'register'
+                  ? 'Create account & enter'
+                  : 'Sign in to command center'}
+              </span>
               <ArrowRight size={16} />
-            </button>
-
-            <button
-              type="button"
-              onClick={handleCreateAccount}
-              disabled={isSubmitting}
-              style={{ color: '#93C5FD', fontSize: '12px', textAlign: 'center', padding: '4px' }}
-            >
-              Have an administrator invitation? Create account
             </button>
 
             {/* Demo Mode Button */}

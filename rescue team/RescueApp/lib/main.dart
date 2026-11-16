@@ -13,6 +13,7 @@ import 'screens/shelters_screen.dart';
 import 'screens/tactical_chat_screen.dart';
 import 'screens/emergency_sos_screen.dart';
 import 'screens/volunteers_screen.dart';
+import 'screens/incident_detail_screen.dart';
 import 'widgets/tactical_bottom_navigation.dart';
 import 'widgets/report_incident_dialog.dart';
 
@@ -165,9 +166,15 @@ class _MainShellScreenState extends State<MainShellScreen> {
   void _openIncidentDetails(Incident incident) {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => TacticalChatScreen(
+        builder: (detailCtx) => IncidentDetailScreen(
           appState: widget.appState,
+          incidentId: incident.id,
           onSosPressed: _openSosScreen,
+          onOpenChat: _openTeamChat,
+          onOpenMap: () {
+            Navigator.of(detailCtx).pop();
+            widget.appState.setTabIndex(1);
+          },
         ),
       ),
     );
@@ -195,6 +202,7 @@ class _MainShellScreenState extends State<MainShellScreen> {
             onOpenIncidents: () => widget.appState.setTabIndex(2),
             onOpenTeams: () => widget.appState.setTabIndex(3),
             onReportIncident: _openReportIncidentDialog,
+            onSelectIncident: _openIncidentDetails,
           ),
           LiveMapScreen(
             appState: widget.appState,

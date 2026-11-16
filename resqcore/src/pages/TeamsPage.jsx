@@ -16,16 +16,20 @@ import { StatusBadge } from '../components/common/Badge';
 import { AssignTeamModal } from '../components/modals/AssignTeamModal';
 
 export const TeamsPage = () => {
-  const { teams, setAssignModalTeam, isDemoMode, user } = useApp();
+  const { teams, incidents, setAssignModalTeam, isDemoMode, user } = useApp();
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
 
   const filteredTeams = teams.filter(team => {
+    const q = searchQuery.toLowerCase();
+    const leadLabel = (team.lead || team.callsign || '').toLowerCase();
+    const specLabel = (team.specialization || '').toLowerCase();
+    const stagingLabel = (team.staging || team.sectorId || '').toLowerCase();
     const matchesSearch =
-      team.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      team.lead.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      team.specialization.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      team.staging.toLowerCase().includes(searchQuery.toLowerCase());
+      (team.name || '').toLowerCase().includes(q) ||
+      leadLabel.includes(q) ||
+      specLabel.includes(q) ||
+      stagingLabel.includes(q);
     const matchesStatus = statusFilter === 'All' || team.status === statusFilter;
     return matchesSearch && matchesStatus;
   });
@@ -221,16 +225,25 @@ export const TeamsPage = () => {
                     </div>
                   </div>
                   <div>
-                    <span style={{ fontSize: '11px', color: '#64748B' }}>Team Lead</span>
+                    <span style={{ fontSize: '11px', color: '#64748B' }}>
+                      {team.lead ? 'Team Lead' : 'Callsign / Unit'}
+                    </span>
                     <div style={{ fontSize: '13px', fontWeight: 600, color: '#CBD5E1', marginTop: '2px' }}>
-                      {team.lead}
+                      {team.lead || team.callsign || team.id}
                     </div>
                   </div>
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: '#94A3B8', marginTop: '12px' }}>
                   <MapPin size={14} color="#64748B" />
-                  <span>Staging: {team.staging}</span>
+                  <span>
+                    Staging:{' '}
+                    {team.staging ||
+                      team.sectorId ||
+                      (team.coordinates
+                        ? `${Number(team.coordinates.lat).toFixed(4)}° N, ${Number(team.coordinates.lng).toFixed(4)}° E`
+                        : 'Live Standby Sector')}
+                  </span>
                 </div>
               </div>
 
@@ -288,7 +301,10 @@ export const TeamsPage = () => {
                       Active Assignment
                     </div>
                     <div style={{ fontSize: '13.5px', fontWeight: 600, color: '#FFFFFF', marginTop: '4px' }}>
-                      {team.task}
+                      {(() => {
+                        const inc = incidents.find(i => i.id === team.task);
+                        return inc ? `${inc.id} · ${inc.title}` : (team.task || 'Active Mission');
+                      })()}
                     </div>
                     <div style={{ fontSize: '12px', color: '#10B981', fontWeight: 600, marginTop: '4px' }}>
                       {team.eta || team.note || 'On site responding'}

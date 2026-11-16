@@ -1,100 +1,67 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import {
   initialIncidents,
   initialTeams,
-  initialChannels,
-  initialDirectMessages,
   initialMessages,
   initialAlerts,
   initialCameras
 } from '../data/initialData';
-import { apiFetch, mapAlert, mapIncident, mapMessage, mapTeam, supabase, supabaseConfigured } from '../lib/supabase';
-import { createRealtimeEventSource } from '../lib/realtimeEventSource';
+import {
+  apiUrl,
+  wsUrl,
+  getStoredToken,
+  setStoredToken,
+  clearStoredToken
+} from '../utils/apiConfig';
+
+const ENV_COMMAND_TOKEN = (import.meta.env.VITE_COMMAND_TOKEN || '').trim();
 
 const AppContext = createContext();
 
 export const AppProvider = ({ children }) => {
   // Navigation & Auth
+  const [token, setToken] = useState(() => getStoredToken() || ENV_COMMAND_TOKEN);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [session, setSession] = useState(null);
+  const [authChecking, setAuthChecking] = useState(() => Boolean(getStoredToken() || ENV_COMMAND_TOKEN));
   const [isDemoMode, setIsDemoMode] = useState(false);
   const [activeTab, setActiveTab] = useState('command-center');
   const [user, setUser] = useState({
-    name: 'Ananya Kumar',
+    name: '',
     role: 'Command Operator',
-    email: 'ananya.kumar@resqcore.gov.in',
+    email: '',
     district: 'Dehradun, Uttarakhand'
   });
 
-  // Operational Data
-  const [incidents, setIncidents] = useState(initialIncidents);
-  const [teams, setTeams] = useState(initialTeams);
-  const [cameras, setCameras] = useState(initialCameras);
-  const [alerts, setAlerts] = useState(initialAlerts);
+  // Operational Data (live mode starts empty; demo mode populates initialData)
+  const [incidents, setIncidents] = useState([]);
+  const [teams, setTeams] = useState([]);
+  const [cameras, setCameras] = useState([]);
+  const [alerts, setAlerts] = useState([]);
+  const [osState, setOsState] = useState(null);
+  const [osLive, setOsLive] = useState(null);
+  const [osLastUpdated, setOsLastUpdated] = useState(null);
+  const [intelligence, setIntelligence] = useState(null);
+  const [wsStatus, setWsStatus] = useState('Offline'); // 'Live' | 'Reconnecting' | 'Offline'
 
   // Selection & UI State
-  const [selectedIncidentId, setSelectedIncidentId] = useState('INC-2048');
+  const [selectedIncidentId, setSelectedIncidentId] = useState(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isLoadingSync, setIsLoadingSync] = useState(false);
-  const [citizenBridgeConnected, setCitizenBridgeConnected] = useState(false);
+  const [sseStatus, setSseStatus] = useState('disconnected'); // 'connected' | 'reconnecting' | 'disconnected'
+  const citizenBridgeConnected = sseStatus === 'connected';
 
   // Chat & Communication
-  const [activeChannel, setActiveChannel] = useState('ernakulam-command');
-  const [messages, setMessages] = useState(initialMessages);
+  const [activeChannel, setActiveChannel] = useState('command-net');
+  const [messages, setMessages] = useState({});
 
   // Active Toasts
-  const [toasts, setToasts] = useState([
-    {
-      id: 'toast-initial-high',
-      type: 'high-incident',
-      title: 'New High incident',
-      code: 'INC-2048 · Flooding in Fort Kochi',
-      detail: '320 people affected · Verification required',
-      incidentId: 'INC-2048'
-    }
-  ]);
+  const [toasts, setToasts] = useState([]);
 
   // Modals
   const [assignModalTeam, setAssignModalTeam] = useState(null);
 
-  useEffect(() => {
-    if (!supabaseConfigured || !supabase) return undefined;
-    let active = true;
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession);
-      if (!nextSession) {
-        setIsAuthenticated(false);
-        setCitizenBridgeConnected(false);
-      }
-    });
-
-    supabase.auth.getSession().then(async ({ data }) => {
-      if (!active || !data.session) return;
-      setSession(data.session);
-      try {
-        const profile = await apiFetch('/auth/me');
-        if (!active) return;
-        if (!['command_admin', 'command_operator'].includes(profile.role)) {
-          await supabase.auth.signOut();
-          return;
-        }
-        setUser(prev => ({
-          ...prev,
-          email: profile.user.email,
-          name: data.session.user.user_metadata?.full_name || profile.user.email,
-          role: profile.role === 'command_admin' ? 'District Administrator' : 'Command Operator',
-        }));
-        setIsAuthenticated(true);
-      } catch {
-        await supabase.auth.signOut();
-      }
-    });
-
-    return () => {
-      active = false;
-      subscription.unsubscribe();
-    };
-  }, []);
+  const tokenRef = useRef(token);
+  tokenRef.current = token;
 
   // Helper to trigger a toast
   const addToast = (toast) => {
@@ -108,14 +75,6 @@ export const AppProvider = ({ children }) => {
 
   const removeToast = (id) => {
     setToasts(prev => prev.filter(t => t.id !== id));
-  };
-
-  const signOut = async () => {
-    if (supabase) await supabase.auth.signOut();
-    setSession(null);
-    setIsAuthenticated(false);
-    setIsDemoMode(false);
-    setCitizenBridgeConnected(false);
   };
 
   // Emergency Audio Alert Chime using Web Audio API
@@ -156,48 +115,379 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  // Initial live data sync. Subsequent writes arrive over Supabase Realtime.
-  useEffect(() => {
-    if (isDemoMode || !isAuthenticated || !supabaseConfigured) return undefined;
-    let active = true;
-    setIsLoadingSync(true);
+  const logout = useCallback(() => {
+    clearStoredToken();
+    setToken('');
+    setIsAuthenticated(false);
+    setIsDemoMode(false);
+    setSseStatus('disconnected');
+    setIncidents([]);
+    setTeams([]);
+    setCameras([]);
+    setAlerts([]);
+    setIntelligence(null);
+    setMessages({});
+    setToasts([]);
+    setSelectedIncidentId(null);
+    setIsDrawerOpen(false);
+  }, []);
 
-    Promise.all([
-      apiFetch('/incidents'),
-      apiFetch('/teams'),
-      apiFetch('/alerts'),
-      apiFetch('/chat/messages'),
-    ]).then(([incidentData, teamData, alertData, messageData]) => {
-      if (!active) return;
-      setIncidents((incidentData.incidents || []).map(mapIncident));
-      setTeams((teamData.teams || []).map(mapTeam));
-      setAlerts((alertData.alerts || []).map(mapAlert));
-      const liveMessages = messageData.messages || {};
-      setMessages({ ...liveMessages, 'ernakulam-command': liveMessages['command:all'] || [] });
-    }).catch(() => {
-      if (active) addToast({ type: 'broadcast-sent', title: 'Live data unavailable', detail: 'Check your connection and try again.' });
-    }).finally(() => {
-      if (active) setIsLoadingSync(false);
-    });
-
-    return () => { active = false; };
-  }, [isDemoMode, isAuthenticated]);
-
-  // Authenticated Postgres changes keep incidents, teams, alerts, and chat in sync.
-  useEffect(() => {
-    if (!isAuthenticated || isDemoMode || !supabaseConfigured || !session?.user?.id) {
-      setCitizenBridgeConnected(false);
-      return undefined;
+  const apiFetch = useCallback(async (path, options = {}) => {
+    const activeToken = tokenRef.current;
+    const headers = {
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
+      ...(options.headers || {})
+    };
+    const res = await fetch(apiUrl(path), { ...options, headers });
+    if (res.status === 401 && activeToken) {
+      logout();
     }
-    let eventSource;
+    return res;
+  }, [logout]);
+
+  const activateCommandSession = useCallback((data, fallbackEmail, remember = true) => {
+    setStoredToken(data.token, remember);
+    setToken(data.token);
+    setIsDemoMode(false);
+    setIncidents([]);
+    setTeams([]);
+    setCameras([]);
+    setAlerts([]);
+    setIntelligence(null);
+    setMessages({});
+    setToasts([]);
+    setSelectedIncidentId(null);
+    setActiveChannel('command-net');
+    setUser(prev => ({
+      ...prev,
+      id: data.user.id,
+      name: data.user.name,
+      email: data.user.email || fallbackEmail,
+      role: 'Command Operator',
+      district: prev.district || 'Dehradun, Uttarakhand'
+    }));
+    setIsAuthenticated(true);
+    return data;
+  }, []);
+
+  const login = useCallback(async (identifier, password, remember = true) => {
+    const res = await fetch(apiUrl('/api/auth/login'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'command', name: identifier.trim(), identifier: identifier.trim(), password })
+    });
+    const data = await res.json().catch(() => null);
+    if (!data) {
+      throw new Error('Unexpected response from server (expected JSON). Is the backend running on port 5000?');
+    }
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Invalid credentials');
+    }
+    const resolvedToken = data.token || ENV_COMMAND_TOKEN;
+    if (!resolvedToken) {
+      throw new Error('No COMMAND_TOKEN configured on backend or VITE_COMMAND_TOKEN in frontend');
+    }
+    return activateCommandSession({ ...data, token: resolvedToken }, identifier.trim(), remember);
+  }, [activateCommandSession]);
+
+  const registerCommand = useCallback(async ({ name, email, password, inviteCode, remember = true }) => {
+    const res = await fetch(apiUrl('/api/auth/register'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: name.trim(),
+        email: email.trim(),
+        password,
+        role: 'command',
+        ...(inviteCode?.trim() ? { inviteCode: inviteCode.trim() } : {})
+      })
+    });
+    const data = await res.json().catch(() => null);
+    if (!data) {
+      throw new Error('Unexpected response from server (expected JSON). Is the backend running on port 5000?');
+    }
+    if (!res.ok || !data.success || !data.token) {
+      throw new Error(data.error || 'Registration failed');
+    }
+    return activateCommandSession(data, email.trim(), remember);
+  }, [activateCommandSession]);
+
+  const enterDemoMode = useCallback((email = 'ananya.kumar@resqcore.gov.in', roleLabel = 'Command Operator') => {
+    clearStoredToken();
+    setToken('');
+    setIsDemoMode(true);
+    setSseStatus('disconnected');
+    setIncidents(initialIncidents);
+    setTeams(initialTeams);
+    setMessages(initialMessages);
+    setAlerts(initialAlerts);
+    setIntelligence(null);
+    setCameras(initialCameras);
+    setActiveChannel('ernakulam-command');
+    setSelectedIncidentId('INC-2048');
+    setToasts([
+      {
+        id: 'toast-initial-high',
+        type: 'high-incident',
+        title: 'New High incident',
+        code: 'INC-2048 · Flooding in Fort Kochi',
+        detail: '320 people affected · Verification required',
+        incidentId: 'INC-2048'
+      }
+    ]);
+    setUser(prev => ({
+      ...prev,
+      name: 'Ananya Kumar',
+      role: roleLabel,
+      email,
+      district: 'Ernakulam, Kerala'
+    }));
+    setIsAuthenticated(true);
+  }, []);
+
+  // Restore existing Bearer token session on initial mount
+  useEffect(() => {
+    const existing = getStoredToken() || ENV_COMMAND_TOKEN;
+    if (!existing) {
+      setAuthChecking(false);
+      return;
+    }
+    let cancelled = false;
+    fetch(apiUrl('/api/auth/me'), {
+      headers: { Authorization: `Bearer ${existing}` }
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error('unauthorized');
+        if (!cancelled) {
+          setToken(existing);
+          setUser(prev => ({
+            ...prev,
+            name: prev.name || 'Command Operator',
+            role: 'Command Operator'
+          }));
+          setIsAuthenticated(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) logout();
+      })
+      .finally(() => {
+        if (!cancelled) setAuthChecking(false);
+      });
+    return () => { cancelled = true; };
+  }, [logout]);
+
+  // Initial Data Sync from Real-Time Backend
+  useEffect(() => {
+    if (!isAuthenticated || isDemoMode || !token) return;
+
+    apiFetch('/api/incidents')
+      .then(res => (res.ok ? res.json() : null))
+      .then(data => {
+        if (data?.incidents) setIncidents(data.incidents);
+      })
+      .catch(() => { });
+
+    apiFetch('/api/teams')
+      .then(res => (res.ok ? res.json() : null))
+      .then(data => {
+        if (data?.teams) setTeams(data.teams);
+      })
+      .catch(() => { });
+
+    apiFetch('/api/alerts')
+      .then(res => (res.ok ? res.json() : null))
+      .then(data => {
+        if (data?.alerts) setAlerts(data.alerts);
+      })
+      .catch(() => { });
+
+    apiFetch('/api/chat/messages')
+      .then(res => (res.ok ? res.json() : null))
+      .then(data => {
+        if (data?.messages) setMessages(data.messages);
+      })
+      .catch(() => { });
+
+    apiFetch('/api/os/state')
+      .then(res => (res.ok ? res.json() : null))
+      .then(data => {
+        if (data?.state) setOsState(data.state);
+      })
+      .catch(() => { });
+
+    apiFetch('/api/os-live')
+      .then(res => (res.ok ? res.json() : null))
+      .then(data => {
+        if (data && data.banker) {
+          setOsLive(data);
+          setOsState(data);
+          if (data.lastUpdated) setOsLastUpdated(data.lastUpdated);
+        }
+      })
+      .catch(() => { });
+
+    apiFetch('/api/reports/intelligence')
+      .then(res => (res.ok ? res.json() : null))
+      .then(data => {
+        if (data?.intelligence) setIntelligence(data.intelligence);
+      })
+      .catch(() => { });
+  }, [isAuthenticated, isDemoMode, token, apiFetch]);
+
+  const refreshIntelligence = useCallback(async () => {
+    if (isDemoMode) return null;
     try {
-      eventSource = createRealtimeEventSource(session.user.id);
+      const res = await apiFetch('/api/reports/intelligence');
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.intelligence) {
+        setIntelligence(data.intelligence);
+        return data.intelligence;
+      }
+    } catch (_) { }
+    return null;
+  }, [isDemoMode, apiFetch]);
 
-      eventSource.onopen = () => {
-        setCitizenBridgeConnected(true);
-      };
+  const intelligenceTimerRef = useRef(null);
+  const scheduleRefreshIntelligence = useCallback(() => {
+    if (isDemoMode) return;
+    if (intelligenceTimerRef.current) clearTimeout(intelligenceTimerRef.current);
+    intelligenceTimerRef.current = setTimeout(() => {
+      intelligenceTimerRef.current = null;
+      refreshIntelligence();
+    }, 250);
+  }, [isDemoMode, refreshIntelligence]);
+  const scheduleRefreshIntelligenceRef = useRef(() => {});
+  scheduleRefreshIntelligenceRef.current = scheduleRefreshIntelligence;
 
-      // 1. Citizen SOS event
+  useEffect(() => () => {
+    if (intelligenceTimerRef.current) clearTimeout(intelligenceTimerRef.current);
+  }, []);
+
+  const refreshOsLive = useCallback(async () => {
+    if (isDemoMode) return null;
+    try {
+      const res = await apiFetch('/api/os-live');
+      const data = await res.json().catch(() => null);
+      if (res.ok && data && data.banker) {
+        setOsLive(data);
+        setOsState(data);
+        if (data.lastUpdated) setOsLastUpdated(data.lastUpdated);
+        return data;
+      }
+    } catch (_) { }
+    return null;
+  }, [isDemoMode, apiFetch]);
+
+  const refreshOsState = useCallback(() => {
+    refreshOsLive();
+  }, [refreshOsLive]);
+
+  const updateOsResourceTotals = useCallback(async (updates) => {
+    if (isDemoMode) return { ok: false, error: 'Resource updates require Live Backend mode' };
+    try {
+      const res = await apiFetch('/api/os-live/resources', {
+        method: 'POST',
+        body: JSON.stringify(updates)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        return { ok: false, status: res.status, error: data.error || data.message || `HTTP ${res.status}` };
+      }
+      if (data.banker) {
+        setOsLive(data);
+        setOsState(data);
+        if (data.lastUpdated) setOsLastUpdated(data.lastUpdated);
+      }
+      return { ok: true, data };
+    } catch (err) {
+      return { ok: false, error: err?.message || 'Network error' };
+    }
+  }, [isDemoMode, apiFetch]);
+
+  // Real-Time Multi-Channel SSE Event Pipeline with Exponential Backoff
+  useEffect(() => {
+    if (!isAuthenticated || isDemoMode || !token) {
+      setSseStatus('disconnected');
+      return;
+    }
+
+    let eventSource = null;
+    let reconnectTimer = null;
+    let retryCount = 0;
+    let disposed = false;
+
+    const connect = () => {
+      if (disposed) return;
+      try {
+        eventSource = new EventSource(apiUrl(`/api/stream?token=${encodeURIComponent(token)}`));
+
+        eventSource.onopen = () => {
+          retryCount = 0;
+          setSseStatus('connected');
+        };
+
+        eventSource.addEventListener('token_expired', () => {
+          if (eventSource) eventSource.close();
+          logout();
+        });
+
+        eventSource.addEventListener('team_registered', (e) => {
+          try {
+            const payload = JSON.parse(e.data);
+            if (payload.team) {
+              setTeams(prev => {
+                if (prev.some(t => t.id === payload.team.id)) return prev;
+                return [payload.team, ...prev];
+              });
+            }
+          } catch (_) { }
+        });
+
+        eventSource.addEventListener('incident_verified', (e) => {
+          try {
+            const payload = JSON.parse(e.data);
+            if (payload.incident) {
+              setIncidents(prev => prev.map(i => (i.id === payload.incident.id ? { ...i, ...payload.incident } : i)));
+            }
+          } catch (_) { }
+        });
+
+        eventSource.addEventListener('os_state', (e) => {
+          try {
+            const payload = JSON.parse(e.data);
+            if (payload) {
+              setOsState(payload);
+              if (payload.banker) {
+                setOsLive(payload);
+                if (payload.lastUpdated) setOsLastUpdated(payload.lastUpdated);
+              }
+            }
+          } catch (_) { }
+        });
+
+        eventSource.addEventListener('OS_LIVE_UPDATED', (e) => {
+          try {
+            const payload = JSON.parse(e.data);
+            if (payload && payload.banker) {
+              setOsLive(payload);
+              setOsState(payload);
+              setOsLastUpdated(payload.lastUpdated || new Date().toISOString());
+            }
+          } catch (_) { }
+        });
+
+        eventSource.addEventListener('alert_created', (e) => {
+          try {
+            const payload = JSON.parse(e.data);
+            if (payload.alert) {
+              setAlerts(prev => [payload.alert, ...prev.filter(a => a.id !== payload.alert.id)]);
+            }
+          } catch (_) { }
+        });
+
+        // 1. Citizen SOS event
       eventSource.addEventListener('new_citizen_sos', (e) => {
         try {
           const data = JSON.parse(e.data);
@@ -236,8 +526,12 @@ export const AppProvider = ({ children }) => {
               y: 50
             },
             isCitizenSOS: true,
+            citizenUserId: data.citizenUserId || null,
             assignedTeam: data.assignedTeam || null,
-            teamAssigned: data.teamAssigned || null
+            assignedTeamId: data.assignedTeamId || null,
+            teamAssigned: data.teamAssigned || null,
+            substatus: data.substatus || 'Awaiting triage by Command Center',
+            requestedResources: Array.isArray(data.requestedResources) ? data.requestedResources : []
           };
 
           setIncidents(prev => [citizenInc, ...prev.filter(i => i.id !== citizenInc.id)]);
@@ -352,16 +646,31 @@ export const AppProvider = ({ children }) => {
               if (inc.id === targetId) {
                 return {
                   ...inc,
-                  status: inc.status === 'Unverified' ? 'Verified' : inc.status,
+                  status: isDemoMode ? (inc.status === 'Unverified' ? 'Verified' : inc.status) : (payload.incident?.status || 'Responding'),
                   responseSummary: teamName,
                   responseDetail: `ETA ${eta}`,
+                  substatus: payload.incident?.substatus || `${teamName} dispatched · ETA ${eta}`,
                   assignedTeam: teamName,
-                  teamAssigned: teamName
+                  assignedTeamId: payload.teamId || payload.incident?.assignedTeamId || inc.assignedTeamId,
+                  teamAssigned: teamName,
+                  requestedResources: payload.incident?.requestedResources !== undefined
+                    ? payload.incident.requestedResources
+                    : inc.requestedResources
                 };
               }
               return inc;
             })
           );
+          if (payload.teamId || payload.team?.id) {
+            const assignedTid = payload.teamId || payload.team?.id;
+            setTeams(prev =>
+              prev.map(t =>
+                t.id === assignedTid
+                  ? { ...t, ...(payload.team || {}), status: 'Deployed', task: targetId, eta: `ETA ${eta}` }
+                  : t
+              )
+            );
+          }
 
           if (payload.team) {
             setTeams(prev =>
@@ -432,13 +741,13 @@ export const AppProvider = ({ children }) => {
       eventSource.addEventListener('new_chat_message', (e) => {
         try {
           const payload = JSON.parse(e.data);
-          const channel = payload.channel || 'ernakulam-command';
+          const channel = payload.channel || 'command-net';
           const msg = payload.message;
+          if (!msg) return;
 
           setMessages(prev => {
             const list = prev[channel] || [];
-            // Prevent duplicate message if already added locally by ID or text+sender
-            if (list.some(m => m.id === msg.id || (m.text === msg.text && m.sender === msg.sender))) return prev;
+            if (list.some(m => m.id === msg.id)) return prev;
             return {
               ...prev,
               [channel]: [...list, msg]
@@ -461,100 +770,371 @@ export const AppProvider = ({ children }) => {
         }
       });
 
-      eventSource.onerror = () => {
-        setCitizenBridgeConnected(false);
-      };
-    } catch (_) {
-      setCitizenBridgeConnected(false);
-    }
+      // 9. Operational Intelligence real-time refresh signal
+      ['intelligence_updated', 'shelter_updated', 'incident_reported', 'sos_resolved'].forEach((evName) => {
+        eventSource.addEventListener(evName, () => {
+          scheduleRefreshIntelligenceRef.current();
+        });
+      });
+
+        eventSource.onerror = () => {
+          if (eventSource) {
+            eventSource.close();
+            eventSource = null;
+          }
+          if (disposed) return;
+          if (retryCount === 0 && tokenRef.current) {
+            fetch(apiUrl('/api/auth/me'), {
+              headers: { Authorization: `Bearer ${tokenRef.current}` }
+            })
+              .then((res) => {
+                if (res.status === 401 && !disposed) logout();
+              })
+              .catch(() => { });
+          }
+          setSseStatus('reconnecting');
+          const delay = Math.min(30000, 1000 * Math.pow(2, retryCount));
+          retryCount += 1;
+          reconnectTimer = setTimeout(connect, delay);
+        };
+      } catch (_) {
+        if (!disposed) {
+          setSseStatus('reconnecting');
+          const delay = Math.min(30000, 1000 * Math.pow(2, retryCount));
+          retryCount += 1;
+          reconnectTimer = setTimeout(connect, delay);
+        }
+      }
+    };
+
+    connect();
 
     return () => {
+      disposed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       if (eventSource) eventSource.close();
+      setSseStatus('disconnected');
     };
-  }, [isAuthenticated, isDemoMode, session?.user?.id]);
+  }, [isAuthenticated, isDemoMode, token, logout]);
+
+  // Real-Time WebSocket channel for instant OS Monitor snapshots (backoff 1s..15s)
+  useEffect(() => {
+    if (!isAuthenticated || isDemoMode || !token) {
+      setWsStatus('Offline');
+      return;
+    }
+
+    let ws = null;
+    let reconnectTimer = null;
+    let attempt = 0;
+    let disposed = false;
+
+    const connectWs = () => {
+      if (disposed) return;
+      try {
+        ws = new WebSocket(wsUrl(`/ws?token=${encodeURIComponent(token)}`));
+        ws.onopen = () => {
+          attempt = 0;
+          setWsStatus('Live');
+          refreshOsLive();
+          scheduleRefreshIntelligenceRef.current();
+        };
+        ws.onmessage = (evt) => {
+          try {
+            const msg = JSON.parse(evt.data);
+            const evType = msg?.type || msg?.event;
+            if ((evType === 'OS_LIVE_UPDATED' || evType === 'os_state') && msg?.data?.banker) {
+              setOsLive(msg.data);
+              setOsState(msg.data);
+              setOsLastUpdated(msg.data.lastUpdated || msg.timestamp || new Date().toISOString());
+            }
+            if (
+              evType === 'intelligence_updated' ||
+              evType === 'OS_LIVE_UPDATED' ||
+              evType === 'os_state' ||
+              evType === 'new_citizen_sos' ||
+              evType === 'incident_verified' ||
+              evType === 'incident_assigned' ||
+              evType === 'incident_status_changed' ||
+              evType === 'incident_reported' ||
+              evType === 'new_rescue_sos' ||
+              evType === 'sos_resolved' ||
+              evType === 'team_telemetry_update' ||
+              evType === 'team_registered' ||
+              evType === 'shelter_updated'
+            ) {
+              scheduleRefreshIntelligenceRef.current();
+            }
+          } catch (_) { }
+        };
+        ws.onerror = () => {
+          try { ws?.close(); } catch (_) { }
+        };
+        ws.onclose = () => {
+          if (disposed) return;
+          setWsStatus('Reconnecting');
+          const delay = Math.min(15000, 1000 * Math.pow(2, attempt));
+          attempt += 1;
+          reconnectTimer = setTimeout(connectWs, delay);
+        };
+      } catch (_) {
+        if (!disposed) {
+          setWsStatus('Reconnecting');
+          const delay = Math.min(15000, 1000 * Math.pow(2, attempt));
+          attempt += 1;
+          reconnectTimer = setTimeout(connectWs, delay);
+        }
+      }
+    };
+
+    connectWs();
+
+    return () => {
+      disposed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      try { ws?.close(); } catch (_) { }
+      setWsStatus('Offline');
+    };
+  }, [isAuthenticated, isDemoMode, token, refreshOsLive]);
 
   // Get active selected incident object
   const selectedIncident = incidents.find(i => i.id === selectedIncidentId) || incidents[0];
 
-  // Verification and dispatch are separate live operations; demo mode remains local.
+  // Flow: Verify Incident
   const verifyIncident = async (id) => {
+    setToasts(prev => prev.filter(t => t.incidentId !== id));
+
     if (isDemoMode) {
-      setIncidents(prev => prev.map(inc => inc.id === id ? { ...inc, status: 'Verified', responseSummary: 'Verified · Standby for dispatch', responseDetail: 'Ready to assign' } : inc));
-      setToasts(prev => prev.filter(toast => toast.incidentId !== id));
+      setIncidents(prev =>
+        prev.map(inc => {
+          if (inc.id === id) {
+            return {
+              ...inc,
+              status: 'Verified',
+              responseSummary: 'Bravo 02',
+              responseDetail: 'ETA 12 min',
+              assignedTeam: 'Bravo 02',
+              verifiedAt: '14:33 IST'
+            };
+          }
+          return inc;
+        })
+      );
+      setTeams(prev =>
+        prev.map(team =>
+          team.id === 'bravo-02'
+            ? { ...team, status: 'Deployed', task: 'INC-2048 · Flash flooding', eta: 'ETA 12 min' }
+            : team
+        )
+      );
+      addToast({
+        id: 'toast-assigned-' + Date.now(),
+        type: 'team-assigned',
+        title: 'Team assigned',
+        code: `${id} · Bravo 02 · ETA 12 min`,
+        detail: 'Verified · En route to Fort Kochi',
+        incidentId: id
+      });
       return;
     }
 
     try {
-      const result = await apiFetch('/command/verify', { method: 'POST', body: JSON.stringify({ incidentId: id }) });
-      const verified = mapIncident(result.incident);
-      setIncidents(prev => prev.map(incident => incident.id === id ? verified : incident));
-      setToasts(prev => prev.filter(toast => toast.incidentId !== id));
-    } catch (error) {
-      addToast({ type: 'high-incident', title: 'Verification failed', code: id, detail: error.message, incidentId: id });
-    }
+      const res = await apiFetch('/api/command/verify', {
+        method: 'POST',
+        body: JSON.stringify({ incidentId: id })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.incident) {
+        setIncidents(prev => prev.map(inc => (inc.id === id ? { ...inc, ...data.incident } : inc)));
+        addToast({
+          id: 'toast-verified-' + Date.now(),
+          type: 'team-assigned',
+          title: 'Incident verified',
+          code: id,
+          detail: 'Ready for team dispatch',
+          incidentId: id
+        });
+      }
+    } catch (_) { }
   };
 
-  // Flow: Assign a real team through the protected backend; demo mode remains simulated.
-  const assignTeamToIncident = async (teamId, incidentId) => {
-    const team = teams.find(item => item.id === teamId);
-    const incident = incidents.find(item => item.id === incidentId);
-    if (!team || !incident) return;
+  // Flow: Assign specific team to an incident
+  const assignTeamToIncident = async (teamId, incidentId, eta = '15 min') => {
+    const team = teams.find(t => t.id === teamId);
+    const incident = incidents.find(i => i.id === incidentId);
 
-    if (isDemoMode) {
-      setTeams(prev => prev.map(item => item.id === teamId ? { ...item, status: 'Deployed', task: `${incident.id} · ${incident.title}`, eta: 'ETA 15 min' } : item));
-      setIncidents(prev => prev.map(item => item.id === incidentId ? { ...item, status: item.status === 'Unverified' ? 'Verified' : item.status, responseSummary: team.name, responseDetail: 'ETA 15 min', assignedTeam: team.name } : item));
-      setAssignModalTeam(null);
-      return;
+    if (!team || !incident) return false;
+
+    const cleanEta = (eta || '15 min').trim() || '15 min';
+    const prevTeam = { ...team };
+    const prevIncident = { ...incident };
+
+    setTeams(prev =>
+      prev.map(t => (t.id === teamId ? { ...t, status: 'Deployed', task: `${incident.id} · ${incident.title}`, eta: `ETA ${cleanEta}` } : t))
+    );
+
+    setIncidents(prev =>
+      prev.map(i => {
+        if (i.id === incidentId) {
+          return {
+            ...i,
+            status: isDemoMode ? (i.status === 'Unverified' ? 'Verified' : i.status) : 'Responding',
+            responseSummary: team.name,
+            responseDetail: `ETA ${cleanEta}`,
+            substatus: `${team.name} dispatched · ETA ${cleanEta}`,
+            assignedTeam: team.name,
+            assignedTeamId: team.id,
+            teamAssigned: team.name
+          };
+        }
+        return i;
+      })
+    );
+
+    if (!isDemoMode) {
+      try {
+        const requested = Array.isArray(incident.requestedResources) && incident.requestedResources.length > 0
+          ? incident.requestedResources.map(r => ({ resourceId: r.resourceId, quantity: r.quantity }))
+          : undefined;
+        const resp = await apiFetch('/api/command/dispatch', {
+          method: 'POST',
+          body: JSON.stringify({
+            incidentId: incident.id,
+            teamId: team.id,
+            teamName: team.name,
+            eta: cleanEta,
+            ...(requested ? { resources: requested } : {})
+          })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.success === false) {
+          setTeams(prev => prev.map(t => (t.id === teamId ? prevTeam : t)));
+          setIncidents(prev => prev.map(i => (i.id === incidentId ? prevIncident : i)));
+          addToast({
+            type: 'error',
+            title: 'Dispatch blocked',
+            code: incident.id,
+            detail: data.error || `HTTP ${resp.status}`,
+            incidentId: incident.id
+          });
+          return false;
+        }
+        if (data.incident) {
+          setIncidents(prev => prev.map(i => (i.id === incidentId ? { ...i, ...data.incident } : i)));
+        }
+        if (data.team) {
+          setTeams(prev => prev.map(t => (t.id === teamId ? { ...t, ...data.team } : t)));
+        }
+      } catch (err) {
+        setTeams(prev => prev.map(t => (t.id === teamId ? prevTeam : t)));
+        setIncidents(prev => prev.map(i => (i.id === incidentId ? prevIncident : i)));
+        addToast({
+          type: 'error',
+          title: 'Dispatch failed',
+          code: incident.id,
+          detail: err?.message || 'Network error',
+          incidentId: incident.id
+        });
+        return false;
+      }
     }
 
-    try {
-      const result = await apiFetch('/command/dispatch', {
-        method: 'POST',
-        body: JSON.stringify({ incidentId: incident.id, teamName: team.name, eta: '15 min' }),
-      });
-      const updated = mapIncident(result.incident);
-      setIncidents(prev => prev.map(item => item.id === incidentId ? updated : item));
-      setTeams(prev => prev.map(item => item.id === team.id ? { ...item, status: 'Deployed', task: `${incident.id} · ${incident.title}`, eta: 'ETA 15 min' } : item));
-      addToast({ type: 'team-assigned', title: 'Team assigned', code: `${incident.id} · ${team.name} · ETA 15 min`, detail: `Dispatched to ${incident.shortLocation || incident.location}`, incidentId: incident.id });
-      setAssignModalTeam(null);
-    } catch (error) {
-      addToast({ type: 'high-incident', title: 'Dispatch failed', code: incident.id, detail: error.message, incidentId: incident.id });
+    addToast({
+      type: 'team-assigned',
+      title: 'Team assigned',
+      code: `${incident.id} · ${team.name} · ETA ${cleanEta}`,
+      detail: `Assigned · Dispatched to ${incident.shortLocation || incident.location}`,
+      incidentId: incident.id
+    });
+
+    setAssignModalTeam(null);
+    return true;
+  };
+
+  const updateIncidentStatus = async (incidentId, status, notes = '') => {
+    const incident = incidents.find(i => i.id === incidentId);
+    if (!incident) return false;
+    const prevIncident = { ...incident };
+
+    setIncidents(prev =>
+      prev.map(i => (i.id === incidentId ? { ...i, status, substatus: notes || `Status updated to ${status}` } : i))
+    );
+
+    if (!isDemoMode) {
+      try {
+        const resp = await apiFetch('/api/incidents/update', {
+          method: 'POST',
+          body: JSON.stringify({ incidentId, status, ...(notes ? { notes } : {}) })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.success === false) {
+          setIncidents(prev => prev.map(i => (i.id === incidentId ? prevIncident : i)));
+          addToast({
+            type: 'error',
+            title: 'Status update failed',
+            code: incidentId,
+            detail: data.error || `HTTP ${resp.status}`,
+            incidentId
+          });
+          return false;
+        }
+        if (data.incident) {
+          setIncidents(prev => prev.map(i => (i.id === incidentId ? { ...i, ...data.incident } : i)));
+        }
+      } catch (err) {
+        setIncidents(prev => prev.map(i => (i.id === incidentId ? prevIncident : i)));
+        return false;
+      }
     }
+    return true;
   };
 
   // Flow: Send Chat Message
   const sendMessage = (channelId, text) => {
     const cleanText = text.trim();
     if (!cleanText) return;
+    const targetChannel = channelId || 'command-net';
+    const senderName = user.name || 'Command Operator';
+    const initials = senderName
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map(s => s[0].toUpperCase())
+      .join('') || 'CO';
 
-    if (isDemoMode) {
-      const newMessage = {
-        id: 'm-' + Date.now(),
-        sender: `${user.name} · You`,
-        initials: 'AK',
-        isSelf: true,
-        time: new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()),
-        text: cleanText,
-      };
-      setMessages(prev => ({ ...prev, [channelId]: [...(prev[channelId] || []), newMessage] }));
-      return;
+    const newMessage = {
+      id: `m-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      channel: targetChannel,
+      sender: senderName,
+      senderRole: 'command',
+      role: user.role || 'Command Operator',
+      initials,
+      isSelf: true,
+      time: new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()),
+      text: cleanText
+    };
+
+    setMessages(prev => ({
+      ...prev,
+      [targetChannel]: [...(prev[targetChannel] || []), newMessage]
+    }));
+
+    if (!isDemoMode) {
+      apiFetch('/api/chat/send', {
+        method: 'POST',
+        body: JSON.stringify({
+          id: newMessage.id,
+          channel: targetChannel,
+          sender: senderName,
+          role: user.role || 'Command Operator',
+          text: cleanText
+        })
+      }).catch(() => { });
     }
-
-    apiFetch('/chat/send', { method: 'POST', body: JSON.stringify({ channel: 'command:all', text: cleanText }) })
-      .then(({ message }) => {
-        const current = mapMessage(message, session?.user?.id);
-        setMessages(prev => {
-          const channel = 'ernakulam-command';
-          const list = prev[channel] || [];
-          if (list.some(item => item.id === current.id)) return prev;
-          return { ...prev, [channel]: [...list, current] };
-        });
-      })
-      .catch((error) => addToast({ type: 'broadcast-sent', title: 'Message not sent', detail: error.message }));
   };
 
   // Flow: Send Broadcast
-  const sendBroadcast = ({ recipients, message, severity = 'Info' }) => {
+  const sendBroadcast = ({ recipients, message, severity = 'Info', audience = 'all' }) => {
     addToast({
       type: 'broadcast-sent',
       title: 'Broadcast Dispatched',
@@ -562,25 +1142,30 @@ export const AppProvider = ({ children }) => {
       detail: message.slice(0, 70) + (message.length > 70 ? '...' : '')
     });
 
-    // Also add to operational alerts
-    setAlerts(prev => [
-      {
-        id: 'a-' + Date.now(),
-        title: 'Command broadcast issued',
-        code: 'ALL-UNITS',
-        subtitle: message.slice(0, 45) + '...',
-        timeAgo: 'Just now',
-        severity
-      },
-      ...prev
-    ]);
-
-    if (!isDemoMode) {
-      apiFetch('/command/broadcast', {
-        method: 'POST',
-        body: JSON.stringify({ recipients, message, severity }),
-      }).catch((error) => addToast({ type: 'broadcast-sent', title: 'Broadcast not sent', detail: error.message }));
+    if (isDemoMode) {
+      setAlerts(prev => [
+        {
+          id: 'a-' + Date.now(),
+          title: 'Command broadcast issued',
+          code: 'ALL-UNITS',
+          subtitle: message.slice(0, 45) + '...',
+          timeAgo: 'Just now',
+          severity
+        },
+        ...prev
+      ]);
+      return;
     }
+
+    apiFetch('/api/command/broadcast', {
+      method: 'POST',
+      body: JSON.stringify({
+        recipients,
+        message,
+        severity,
+        audience
+      })
+    }).catch(() => { });
   };
 
   // Open incident in drawer & navigate
@@ -660,8 +1245,12 @@ export const AppProvider = ({ children }) => {
       value={{
         isAuthenticated,
         setIsAuthenticated,
-        session,
-        signOut,
+        authChecking,
+        login,
+        registerCommand,
+        logout,
+        enterDemoMode,
+        apiFetch,
         activeTab,
         setActiveTab,
         user,
@@ -682,6 +1271,7 @@ export const AppProvider = ({ children }) => {
         inspectIncident,
         verifyIncident,
         assignTeamToIncident,
+        updateIncidentStatus,
         assignModalTeam,
         setAssignModalTeam,
         activeChannel,
@@ -698,7 +1288,17 @@ export const AppProvider = ({ children }) => {
         setIsLoadingSync,
         isDemoMode,
         setIsDemoMode,
-        citizenBridgeConnected
+        sseStatus,
+        citizenBridgeConnected,
+        osState,
+        osLive,
+        osLastUpdated,
+        intelligence,
+        wsStatus,
+        refreshOsState,
+        refreshOsLive,
+        refreshIntelligence,
+        updateOsResourceTotals
       }}
     >
       {children}

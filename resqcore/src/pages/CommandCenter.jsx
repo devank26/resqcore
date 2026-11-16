@@ -14,8 +14,10 @@ import {
 import { useApp } from '../context/AppContext';
 import { MapView } from '../components/common/MapView';
 import { WeatherForecastWidget } from '../components/common/WeatherForecastWidget';
+import { formatOperationalLongDate, useCurrentDate } from '../utils/dateUtils';
 
 export const CommandCenter = () => {
+  const now = useCurrentDate();
   const {
     incidents,
     teams,
@@ -30,17 +32,28 @@ export const CommandCenter = () => {
 
   const [activeCameraModal, setActiveCameraModal] = useState(null);
 
-  const activeIncidentsCount = incidents.length;
-  const highCount = incidents.filter(i => i.severity === 'High').length;
+  const activeIncidentsCount = incidents.filter(i => i.status !== 'Resolved').length;
+  const highCount = incidents.filter(i => i.severity === 'High' || i.severity === 'Critical').length;
   const medCount = incidents.filter(i => i.severity === 'Medium').length;
-  const infoCount = incidents.filter(i => i.severity === 'Info').length;
+  const infoCount = incidents.filter(i => i.severity === 'Info' || i.severity === 'Low').length;
 
-  const peopleAffected = isDemoMode ? '1,284' : '0';
-  const zonesAffected = isDemoMode ? 'Across 8 response zones' : '0 response zones';
-  const teamsDeployed = isDemoMode ? '12 / 16' : '0 / 0';
-  const teamsAvailable = isDemoMode ? '4 teams available for response' : '0 teams available';
-  const reliefSupplies = isDemoMode ? '8,450' : '0';
-  const reliefDetails = isDemoMode ? 'Units ready · 6 distribution hubs' : 'No active operations';
+  const liveAffected = incidents.reduce((sum, i) => sum + (Number(i.affected) || 0), 0);
+  const liveZones = new Set(incidents.map(i => i.sectorId || i.shortLocation).filter(Boolean)).size;
+  const liveDeployed = teams.filter(t => t.status === 'Deployed' || t.status === 'On site').length;
+  const liveAvailable = teams.filter(t => t.status === 'Available').length;
+
+  const peopleAffected = isDemoMode ? '1,284' : liveAffected.toLocaleString();
+  const zonesAffected = isDemoMode
+    ? 'Across 8 response zones'
+    : `Across ${liveZones} response ${liveZones === 1 ? 'zone' : 'zones'}`;
+  const teamsDeployed = isDemoMode ? '12 / 16' : `${liveDeployed} / ${teams.length}`;
+  const teamsAvailable = isDemoMode
+    ? '4 teams available for response'
+    : `${liveAvailable} ${liveAvailable === 1 ? 'team' : 'teams'} available for response`;
+  const reliefSupplies = isDemoMode ? '8,450' : `${incidents.reduce((sum, i) => sum + (Array.isArray(i.requestedResources) ? i.requestedResources.reduce((s, r) => s + (Number(r.quantity) || 0), 0) : 0), 0)}`;
+  const reliefDetails = isDemoMode
+    ? 'Units ready · 6 distribution hubs'
+    : 'Requested resource units across active SOS';
 
   return (
     <div style={{ padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -66,7 +79,7 @@ export const CommandCenter = () => {
             Operational overview
           </h1>
           <p style={{ fontSize: '13px', color: '#94A3B8', marginTop: '4px' }}>
-            {isDemoMode ? 'Ernakulam district, Kerala' : (user?.district || 'Dehradun, Uttarakhand')} · Friday, 09 October 2026
+            {isDemoMode ? 'Ernakulam district, Kerala' : (user?.district || 'Dehradun, Uttarakhand')} · {formatOperationalLongDate(now)}
           </p>
         </div>
 

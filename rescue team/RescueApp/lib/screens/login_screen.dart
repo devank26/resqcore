@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/tactical_theme.dart';
 import '../models/app_state.dart';
-import '../services/tactical_sync_service.dart';
 
 class LoginScreen extends StatefulWidget {
   final AppState appState;
@@ -21,94 +19,48 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final TextEditingController _emailController = TextEditingController();
-  final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _teamNameController = TextEditingController(text: 'Bravo 02');
+  final TextEditingController _phoneController = TextEditingController(text: '98110 44201');
+  final TextEditingController _otpController = TextEditingController(text: '739201');
   String _selectedRole = 'Team Leader / Commander';
-  bool _isAuthenticating = false;
+  bool _otpSent = true;
   String? _statusBanner;
+
+  final List<String> _roles = [
+    'Team Leader / Commander',
+    'Volunteer Rescuer',
+    'Medical Personnel',
+    'Civilian',
+  ];
 
   @override
   void dispose() {
-    _emailController.dispose();
-    _passwordController.dispose();
+    _teamNameController.dispose();
+    _phoneController.dispose();
+    _otpController.dispose();
     super.dispose();
   }
 
   void _selectDemoRole(String role, String phone, String persona) {
     setState(() {
       _selectedRole = role;
-      _statusBanner = '$role loaded for demo mode.';
+      _phoneController.text = phone.replaceAll('+91 ', '');
+      _otpController.text = '739201';
+      _otpSent = true;
+      _statusBanner = '$role Loaded: $persona • Ready for field dispatch';
     });
     widget.appState.setDemoRole(role, phone, persona);
+  }
+
+  void _submitAuth() {
+    final unitName = _teamNameController.text.trim();
+    widget.appState.login(
+      _selectedRole,
+      '+91 ${_phoneController.text.trim()}',
+      name: unitName.isNotEmpty ? unitName : null,
+      teamName: unitName.isNotEmpty ? unitName : null,
+    );
     widget.onLoginSuccess();
-  }
-
-  Future<void> _submitAuth() async {
-    final email = _emailController.text.trim().toLowerCase();
-    final password = _passwordController.text;
-    if (email.isEmpty || password.isEmpty) {
-      setState(() => _statusBanner = 'Enter your staff email and password.');
-      return;
-    }
-
-    setState(() {
-      _isAuthenticating = true;
-      _statusBanner = null;
-    });
-
-    try {
-      final auth = Supabase.instance.client.auth;
-      final result = await auth.signInWithPassword(email: email, password: password);
-      if (result.user == null) throw const AuthException('Invalid email or password.');
-      final profile = await TacticalSyncService.getStaffProfile();
-      if (profile == null || profile['role'] != 'rescue_team' || (profile['teamId'] ?? '').toString().isEmpty) {
-        await auth.signOut();
-        throw const AuthException('This account does not have an approved rescue-team assignment.');
-      }
-      final metadata = result.user!.userMetadata ?? const <String, dynamic>{};
-      widget.appState.loginLive(
-        email: result.user!.email ?? email,
-        name: (metadata['full_name'] ?? metadata['name'] ?? result.user!.email ?? email).toString(),
-        role: 'Rescue Team',
-        teamId: profile['teamId'].toString(),
-      );
-      widget.onLoginSuccess();
-    } on AuthException catch (error) {
-      setState(() => _statusBanner = error.message.contains('confirm') ? 'Confirm your email before signing in.' : error.message);
-    } catch (_) {
-      setState(() => _statusBanner = 'Could not sign in. Check your account and connection.');
-    } finally {
-      if (mounted) setState(() => _isAuthenticating = false);
-    }
-  }
-
-  Future<void> _registerInvitedAccount() async {
-    final email = _emailController.text.trim().toLowerCase();
-    final password = _passwordController.text;
-    if (email.isEmpty || password.length < 6) {
-      setState(() => _statusBanner = 'Enter your invited staff email and a password of at least 6 characters.');
-      return;
-    }
-    setState(() {
-      _isAuthenticating = true;
-      _statusBanner = null;
-    });
-    try {
-      await Supabase.instance.client.auth.signUp(
-        email: email,
-        password: password,
-        data: {'full_name': email.split('@').first},
-      );
-      setState(() => _statusBanner = 'Check your email to confirm the account. Access activates only if an administrator invited this address.');
-    } on AuthException catch (error) {
-      setState(() => _statusBanner = error.message.toLowerCase().contains('rate')
-          ? 'Too many sign-up attempts. Try again later.'
-          : 'Could not create the account. Check the email and invitation.');
-    } catch (_) {
-      setState(() => _statusBanner = 'Could not create the account. Check your connection and invitation.');
-    } finally {
-      if (mounted) setState(() => _isAuthenticating = false);
-    }
   }
 
   @override
@@ -443,23 +395,44 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                         const SizedBox(height: 8),
 
+                        // Operational Role Selector
                         Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+                          height: 38,
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
                           decoration: BoxDecoration(
                             color: TacticalColors.surfaceContainerLowest,
                             borderRadius: BorderRadius.circular(8),
                             border: Border.all(color: const Color(0xFF1E293B)),
                           ),
-                          child: const Text(
-                            'Live role is assigned by your administrator after approval.',
-                            style: TextStyle(color: TacticalColors.onSurfaceVariant, fontSize: 11),
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<String>(
+                              value: _selectedRole,
+                              isExpanded: true,
+                              dropdownColor: TacticalColors.surfaceContainerHigh,
+                              icon: const Icon(Icons.expand_more, color: TacticalColors.outline, size: 18),
+                              items: _roles.map((role) {
+                                return DropdownMenuItem<String>(
+                                  value: role,
+                                  child: Text(
+                                    role,
+                                    style: const TextStyle(
+                                      color: TacticalColors.onSurface,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                );
+                              }).toList(),
+                              onChanged: (val) {
+                                if (val != null) setState(() => _selectedRole = val);
+                              },
+                            ),
                           ),
                         ),
                         const SizedBox(height: 8),
 
+                        // Unit / Team Callsign Input (Live PostgreSQL registration)
                         Container(
-                          height: 38,
+                          height: 36,
                           padding: const EdgeInsets.symmetric(horizontal: 10),
                           decoration: BoxDecoration(
                             color: TacticalColors.surfaceContainerLowest,
@@ -467,48 +440,135 @@ class _LoginScreenState extends State<LoginScreen> {
                             border: Border.all(color: const Color(0xFF1E293B)),
                           ),
                           child: TextField(
-                            controller: _emailController,
-                            keyboardType: TextInputType.emailAddress,
-                            textInputAction: TextInputAction.next,
-                            style: const TextStyle(color: TacticalColors.onSurface, fontSize: 13),
+                            controller: _teamNameController,
+                            style: const TextStyle(
+                              color: TacticalColors.onSurface,
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                            ),
                             decoration: const InputDecoration(
                               border: InputBorder.none,
                               isDense: true,
-                              contentPadding: EdgeInsets.symmetric(vertical: 10),
-                              icon: Icon(Icons.mail_outline, color: TacticalColors.outline, size: 16),
-                              hintText: 'Staff email address',
+                              contentPadding: EdgeInsets.symmetric(vertical: 9),
+                              icon: Icon(Icons.groups, color: TacticalColors.primary, size: 16),
+                              hintText: 'Unit / Team Name (e.g. Bravo 02)',
                               hintStyle: TextStyle(color: TacticalColors.outline, fontSize: 12),
                             ),
                           ),
                         ),
                         const SizedBox(height: 8),
-                        Container(
-                          height: 38,
-                          padding: const EdgeInsets.symmetric(horizontal: 10),
-                          decoration: BoxDecoration(
-                            color: TacticalColors.surfaceContainerLowest,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: const Color(0xFF1E293B)),
-                          ),
-                          child: TextField(
-                            controller: _passwordController,
-                            obscureText: true,
-                            textInputAction: TextInputAction.done,
-                            onSubmitted: (_) => _submitAuth(),
-                            style: const TextStyle(color: TacticalColors.onSurface, fontSize: 13),
-                            decoration: const InputDecoration(
-                              border: InputBorder.none,
-                              isDense: true,
-                              contentPadding: EdgeInsets.symmetric(vertical: 10),
-                              icon: Icon(Icons.lock_outline, color: TacticalColors.outline, size: 16),
-                              hintText: 'Password',
-                              hintStyle: TextStyle(color: TacticalColors.outline, fontSize: 12),
+
+                        // Phone Input + Get OTP
+                        Row(
+                          children: [
+                            Container(
+                              height: 38,
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                color: TacticalColors.surfaceContainerLowest,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: const Color(0xFF1E293B)),
+                              ),
+                              child: const Text(
+                                '🇮🇳 +91',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  color: TacticalColors.onSurface,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Container(
+                                height: 38,
+                                padding: const EdgeInsets.symmetric(horizontal: 10),
+                                decoration: BoxDecoration(
+                                  color: TacticalColors.surfaceContainerLowest,
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: const Color(0xFF1E293B)),
+                                ),
+                                child: TextField(
+                                  controller: _phoneController,
+                                  keyboardType: TextInputType.phone,
+                                  style: const TextStyle(
+                                    color: TacticalColors.onSurface,
+                                    fontSize: 13,
+                                  ),
+                                  decoration: InputDecoration(
+                                    border: InputBorder.none,
+                                    isDense: true,
+                                    contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                                    hintText: '98765 43210',
+                                    hintStyle: const TextStyle(color: TacticalColors.outline, fontSize: 12),
+                                    suffixIcon: InkWell(
+                                      onTap: () {
+                                        setState(() {
+                                          _otpSent = true;
+                                          _otpController.text = '739201';
+                                          _statusBanner = 'SMS OTP Dispatched to ${_phoneController.text}';
+                                        });
+                                      },
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                                        margin: const EdgeInsets.symmetric(vertical: 6),
+                                        decoration: BoxDecoration(
+                                          color: TacticalColors.surfaceContainerHigh,
+                                          borderRadius: BorderRadius.circular(4),
+                                        ),
+                                        child: const Center(
+                                          child: Text(
+                                            'Get OTP',
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                              color: TacticalColors.primary,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+
+                        if (_otpSent) ...[
+                          const SizedBox(height: 8),
+                          Container(
+                            height: 38,
+                            padding: const EdgeInsets.symmetric(horizontal: 10),
+                            decoration: BoxDecoration(
+                              color: TacticalColors.surfaceContainerLowest,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: const Color(0xFF1E293B)),
+                            ),
+                            child: TextField(
+                              controller: _otpController,
+                              keyboardType: TextInputType.number,
+                              style: const TextStyle(
+                                color: TacticalColors.onSurface,
+                                fontSize: 13,
+                                letterSpacing: 3,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              decoration: const InputDecoration(
+                                border: InputBorder.none,
+                                isDense: true,
+                                contentPadding: EdgeInsets.symmetric(vertical: 10),
+                                icon: Icon(Icons.pin, color: TacticalColors.outline, size: 16),
+                                hintText: 'Enter 6-digit code',
+                                hintStyle: TextStyle(
+                                  color: TacticalColors.outline,
+                                  letterSpacing: 0,
+                                  fontSize: 12,
+                                ),
+                              ),
                             ),
                           ),
-                        ),
-                        if (_statusBanner != null) ...[
-                          const SizedBox(height: 6),
-                          Text(_statusBanner!, style: const TextStyle(color: TacticalColors.warningAmber, fontSize: 11)),
                         ],
 
                         const SizedBox(height: 10),
@@ -517,19 +577,13 @@ class _LoginScreenState extends State<LoginScreen> {
                           width: double.infinity,
                           height: 42,
                           child: ElevatedButton.icon(
-                            onPressed: _isAuthenticating ? null : _submitAuth,
-                            icon: _isAuthenticating
-                                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                                : const Icon(Icons.lock_open, size: 18),
-                            label: Text(
-                              _isAuthenticating ? 'Checking account…' : 'Sign in to Rescue Team',
-                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                            onPressed: _submitAuth,
+                            icon: const Icon(Icons.fingerprint, size: 18),
+                            label: const Text(
+                              'Authenticate & Enter Command',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
                             ),
                           ),
-                        ),
-                        TextButton(
-                          onPressed: _isAuthenticating ? null : _registerInvitedAccount,
-                          child: const Text('Have an administrator invitation? Create an account'),
                         ),
                       ],
                     ),

@@ -20,7 +20,7 @@ import { useApp } from '../../context/AppContext';
 import { fetchDistrictWeather } from '../../utils/weatherService';
 
 export const Topbar = ({ title, breadcrumb }) => {
-  const { user, setUser, setIsAuthenticated, signOut, isLoadingSync, setIsLoadingSync, isDemoMode, setIsDemoMode, citizenBridgeConnected } = useApp();
+  const { user, setUser, logout, isLoadingSync, setIsLoadingSync, isDemoMode, setIsDemoMode, sseStatus } = useApp();
   const [isDistrictMenuOpen, setIsDistrictMenuOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
 
@@ -148,59 +148,89 @@ export const Topbar = ({ title, breadcrumb }) => {
         )}
 
 
-        {/* Real-time Citizen App Bridge Status */}
-        {!isDemoMode && citizenBridgeConnected && (
+        {/* Real-time SSE Connection Indicator (live mode) */}
+        {!isDemoMode && (
           <div
-            title="Citizen App Bridge Active (Port 5000) · Real-time citizen SOS listener connected"
+            title={
+              sseStatus === 'connected'
+                ? 'Real-time SSE event stream connected'
+                : sseStatus === 'reconnecting'
+                ? 'SSE stream disconnected — reconnecting with backoff'
+                : 'SSE stream disconnected'
+            }
             style={{
               display: 'flex',
               alignItems: 'center',
               gap: '6px',
               padding: '6px 12px',
               borderRadius: '9999px',
-              backgroundColor: 'rgba(56, 189, 248, 0.12)',
-              border: '1px solid rgba(56, 189, 248, 0.3)',
-              color: '#38BDF8',
+              backgroundColor:
+                sseStatus === 'connected'
+                  ? 'rgba(16, 185, 129, 0.12)'
+                  : sseStatus === 'reconnecting'
+                  ? 'rgba(245, 158, 11, 0.12)'
+                  : 'rgba(239, 68, 68, 0.12)',
+              border: `1px solid ${
+                sseStatus === 'connected'
+                  ? 'rgba(16, 185, 129, 0.3)'
+                  : sseStatus === 'reconnecting'
+                  ? 'rgba(245, 158, 11, 0.3)'
+                  : 'rgba(239, 68, 68, 0.3)'
+              }`,
+              color:
+                sseStatus === 'connected'
+                  ? '#10B981'
+                  : sseStatus === 'reconnecting'
+                  ? '#F59E0B'
+                  : '#EF4444',
               fontSize: '12px',
               fontWeight: 600
             }}
           >
-            <Radio size={13} className="animate-pulse" />
-            <span>Citizen App Connected</span>
+            <Radio size={13} className={sseStatus === 'connected' ? 'animate-pulse' : ''} />
+            <span>
+              {sseStatus === 'connected'
+                ? 'SSE Connected'
+                : sseStatus === 'reconnecting'
+                ? 'SSE Reconnecting...'
+                : 'SSE Disconnected'}
+            </span>
           </div>
         )}
 
-        {/* Live sync simulator button */}
-        <button
-          onClick={() => {
-            setIsLoadingSync(true);
-            setTimeout(() => setIsLoadingSync(false), 1400);
-          }}
-          title="Click to simulate live satellite intelligence sync"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            padding: '6px 12px',
-            borderRadius: '9999px',
-            backgroundColor: isLoadingSync ? 'rgba(59, 130, 246, 0.15)' : 'rgba(16, 185, 129, 0.1)',
-            border: `1px solid ${isLoadingSync ? 'rgba(59, 130, 246, 0.3)' : 'rgba(16, 185, 129, 0.25)'}`,
-            color: isLoadingSync ? '#60A5FA' : '#10B981',
-            fontSize: '12px',
-            fontWeight: 500
-          }}
-        >
-          <span
-            style={{
-              width: '6px',
-              height: '6px',
-              borderRadius: '50%',
-              backgroundColor: isLoadingSync ? '#60A5FA' : '#10B981',
-              animation: 'pulseGlow 1.5s infinite ease-in-out'
+        {/* Live sync simulator button (Demo Mode only) */}
+        {isDemoMode && (
+          <button
+            onClick={() => {
+              setIsLoadingSync(true);
+              setTimeout(() => setIsLoadingSync(false), 1400);
             }}
-          />
-          {isLoadingSync ? 'Syncing live data' : 'Live'}
-        </button>
+            title="Click to simulate live satellite intelligence sync"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '6px 12px',
+              borderRadius: '9999px',
+              backgroundColor: isLoadingSync ? 'rgba(59, 130, 246, 0.15)' : 'rgba(16, 185, 129, 0.1)',
+              border: `1px solid ${isLoadingSync ? 'rgba(59, 130, 246, 0.3)' : 'rgba(16, 185, 129, 0.25)'}`,
+              color: isLoadingSync ? '#60A5FA' : '#10B981',
+              fontSize: '12px',
+              fontWeight: 500
+            }}
+          >
+            <span
+              style={{
+                width: '6px',
+                height: '6px',
+                borderRadius: '50%',
+                backgroundColor: isLoadingSync ? '#60A5FA' : '#10B981',
+                animation: 'pulseGlow 1.5s infinite ease-in-out'
+              }}
+            />
+            {isLoadingSync ? 'Syncing live data' : 'Demo Sync'}
+          </button>
+        )}
 
         {/* Location selector */}
         <div style={{ position: 'relative' }}>
@@ -372,13 +402,11 @@ export const Topbar = ({ title, breadcrumb }) => {
                     textTransform: 'uppercase'
                   }}
                 >
-                  Demo role selection
+                  Switch Operational Role
                 </div>
                 {roles.map((r) => (
                   <button
                     key={r}
-                    disabled={!isDemoMode}
-                    aria-disabled={!isDemoMode}
                     onClick={() => {
                       setUser({ ...user, role: r });
                       setIsUserMenuOpen(false);
@@ -408,7 +436,7 @@ export const Topbar = ({ title, breadcrumb }) => {
 
               <div style={{ borderTop: '1px solid #1E293B', paddingTop: '6px' }}>
                 <button
-                  onClick={() => signOut()}
+                  onClick={logout}
                   style={{
                     display: 'flex',
                     alignItems: 'center',

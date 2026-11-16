@@ -2,6 +2,12 @@ import React from 'react';
 
 export const SeverityBadge = ({ severity }) => {
   const map = {
+    Critical: {
+      color: '#F87171',
+      bg: 'rgba(220, 38, 38, 0.16)',
+      border: 'rgba(239, 68, 68, 0.35)',
+      label: 'Critical'
+    },
     High: {
       color: '#EF4444',
       bg: 'rgba(239, 68, 68, 0.12)',
@@ -62,7 +68,8 @@ export const StatusBadge = ({ status }) => {
     Verified: { color: '#10B981', bg: 'rgba(16, 185, 129, 0.12)', border: 'rgba(16, 185, 129, 0.28)', label: 'Verified' },
     Responding: { color: '#10B981', bg: 'rgba(16, 185, 129, 0.12)', border: 'rgba(16, 185, 129, 0.28)', label: 'Responding' },
     'On site': { color: '#10B981', bg: 'rgba(16, 185, 129, 0.12)', border: 'rgba(16, 185, 129, 0.28)', label: 'On site' },
-    Monitoring: { color: '#38BDF8', bg: 'rgba(56, 189, 248, 0.12)', border: 'rgba(56, 189, 248, 0.28)', label: 'Monitoring' }
+    Monitoring: { color: '#38BDF8', bg: 'rgba(56, 189, 248, 0.12)', border: 'rgba(56, 189, 248, 0.28)', label: 'Monitoring' },
+    Resolved: { color: '#34D399', bg: 'rgba(52, 211, 153, 0.14)', border: 'rgba(52, 211, 153, 0.3)', label: 'Resolved' }
   };
 
   const current = map[status] || { color: '#94A3B8', bg: 'rgba(148, 163, 184, 0.12)', border: 'rgba(148, 163, 184, 0.28)', label: status };

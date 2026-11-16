@@ -11,10 +11,21 @@ import '../theme/app_colors.dart';
 import '../theme/app_text_styles.dart';
 import 'dialogs/location_selector_dialog.dart';
 
-// Default center: Dehradun, Uttarakhand (operational theater)
-const LatLng _kDefaultCenter = LatLng(30.3165, 78.0322);
 const double _kDefaultZoom = 13.0;
-const String _kGoogleMapsApiKey = 'AIzaSyAMaBxMmCY1r2TmqoMZUm2-v8FfhE1n44g';
+const String _kGoogleMapsApiKey =
+    String.fromEnvironment('GOOGLE_MAPS_API_KEY', defaultValue: '');
+
+String _googleTileUrl({required bool satellite}) {
+  final lyrs = satellite ? 'y' : 'm';
+  final keyParam = _kGoogleMapsApiKey.isNotEmpty ? '&key=$_kGoogleMapsApiKey' : '';
+  return 'https://mt{s}.google.com/vt/lyrs=$lyrs&x={x}&y={y}&z={z}$keyParam';
+}
+
+String _fallbackTileUrl({required bool satellite}) {
+  return satellite
+      ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+      : 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}';
+}
 
 
 
@@ -337,9 +348,8 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                       ),
                       children: [
                         TileLayer(
-                          urlTemplate: _isOverwatchRadar
-                              ? 'https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&key=$_kGoogleMapsApiKey'
-                              : 'https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&key=$_kGoogleMapsApiKey',
+                          urlTemplate: _googleTileUrl(satellite: _isOverwatchRadar),
+                          fallbackUrl: _fallbackTileUrl(satellite: _isOverwatchRadar),
                           subdomains: const ['0', '1', '2', '3'],
                           userAgentPackageName: 'com.example.rescue_core',
                           maxZoom: 20,
