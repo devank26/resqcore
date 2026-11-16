@@ -34,7 +34,7 @@ export class SimpleWebSocketServer {
     socket.destroy();
   }
 
-  handleUpgrade(req, socket, head) {
+  async handleUpgrade(req, socket, head) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
     if (url.pathname !== this.path) {
@@ -47,10 +47,11 @@ export class SimpleWebSocketServer {
 
     let viewer = null;
     try {
-      viewer = this.authenticate(req, url);
+      viewer = await this.authenticate(req, url);
     } catch (_) {
       viewer = null;
     }
+    if (socket.destroyed) return;
     if (!viewer) {
       return this.reject(socket, '401 Unauthorized');
     }

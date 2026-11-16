@@ -48,11 +48,35 @@ class TacticalHeader extends StatelessWidget implements PreferredSizeWidget {
       child: Row(
         children: [
           if (showBackButton)
-            IconButton(
-              icon: const Icon(Icons.arrow_back, color: TacticalColors.onSurface),
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
-              onPressed: onBack ?? () => Navigator.of(context).maybePop(),
+            Tooltip(
+              message: 'Back',
+              child: InkWell(
+                onTap: onBack ?? () => Navigator.of(context).maybePop(),
+                borderRadius: BorderRadius.circular(10),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: TacticalColors.surfaceContainerHigh,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0xFF334155)),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.arrow_back, color: TacticalColors.onSurface, size: 16),
+                      SizedBox(width: 4),
+                      Text(
+                        'Back',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: TacticalColors.onSurface,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             )
           else
             Container(

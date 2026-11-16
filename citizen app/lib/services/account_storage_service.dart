@@ -1,16 +1,49 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/user_profile.dart';
+import 'account_file_store.dart';
 
 /// Persists citizen accounts locally using SharedPreferences with
 /// file-based and in-memory fallbacks so storage operations never throw or block.
 class AccountStorageService {
   static const String _kAccountsKey = 'resqcore_accounts';
   static const String _kAuthTokenKey = 'resqcore_citizen_jwt';
+  static const String _kSessionStateKey = 'resqcore_citizen_session_v1';
   static final List<UserProfile> _memoryCache = [];
   static String _memoryToken = '';
+  static Map<String, dynamic>? _memorySessionState;
+
+  static Future<void> saveSessionState(Map<String, dynamic> state) async {
+    _memorySessionState = Map<String, dynamic>.from(state);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_kSessionStateKey, jsonEncode(state));
+    } catch (_) {}
+  }
+
+  static Future<Map<String, dynamic>?> loadSessionState() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_kSessionStateKey);
+      if (raw != null && raw.isNotEmpty) {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) {
+          _memorySessionState = Map<String, dynamic>.from(decoded);
+          return _memorySessionState;
+        }
+      }
+    } catch (_) {}
+    return _memorySessionState;
+  }
+
+  static Future<void> clearSessionState() async {
+    _memorySessionState = null;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_kSessionStateKey);
+    } catch (_) {}
+  }
 
   static Future<void> saveToken(String token) async {
     _memoryToken = token.trim();
@@ -41,16 +74,7 @@ class AccountStorageService {
     } catch (_) {}
   }
 
-  static File? _getFallbackFile() {
-    try {
-      final tmp = Directory.systemTemp.path;
-      return File('$tmp/resqcore_accounts.json');
-    } catch (_) {
-      return null;
-    }
-  }
-
-  // ── Write ────────────────────────────────────────────────────────────────
+    // ── Write ────────────────────────────────────────────────────────────────
 
   /// Saves [profile] to local storage.
   /// If an account with the same phone or email already exists it is replaced;
@@ -89,14 +113,11 @@ class AccountStorageService {
       debugPrint('SharedPreferences.saveAccount note: $e');
     }
 
-    // 3. Persist to fallback JSON file
+    // 3. Persist to fallback JSON file (no-op on web)
     try {
-      final file = _getFallbackFile();
-      if (file != null) {
-        await file.writeAsString(
-          jsonEncode(_memoryCache.map((a) => a.toJson()).toList()),
-        );
-      }
+      await writeAccountsFile(
+        jsonEncode(_memoryCache.map((a) => a.toJson()).toList()),
+      );
     } catch (e) {
       debugPrint('Fallback file write note: $e');
     }
@@ -118,19 +139,16 @@ class AccountStorageService {
       debugPrint('SharedPreferences.loadAll note: $e');
     }
 
-    // Try fallback JSON file
+    // Try fallback JSON file (no-op on web)
     try {
-      final file = _getFallbackFile();
-      if (file != null && await file.exists()) {
-        final raw = await file.readAsString();
-        if (raw.isNotEmpty) {
-          final List<dynamic> list = jsonDecode(raw) as List<dynamic>;
-          final parsed = list
-              .map((e) => UserProfile.fromJson(e as Map<String, dynamic>))
-              .toList();
-          _syncToMemory(parsed);
-          return List.unmodifiable(_memoryCache);
-        }
+      final raw = await readAccountsFile();
+      if (raw != null && raw.isNotEmpty) {
+        final List<dynamic> list = jsonDecode(raw) as List<dynamic>;
+        final parsed = list
+            .map((e) => UserProfile.fromJson(e as Map<String, dynamic>))
+            .toList();
+        _syncToMemory(parsed);
+        return List.unmodifiable(_memoryCache);
       }
     } catch (e) {
       debugPrint('Fallback file read note: $e');
@@ -193,12 +211,9 @@ class AccountStorageService {
     } catch (_) {}
 
     try {
-      final file = _getFallbackFile();
-      if (file != null) {
-        await file.writeAsString(
-          jsonEncode(_memoryCache.map((a) => a.toJson()).toList()),
-        );
-      }
+      await writeAccountsFile(
+        jsonEncode(_memoryCache.map((a) => a.toJson()).toList()),
+      );
     } catch (_) {}
   }
 

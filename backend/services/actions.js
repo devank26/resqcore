@@ -1,15 +1,39 @@
 import crypto from 'crypto';
 import { dbManager as db } from './database.js';
-import { eventBus } from './eventBus.js';
+import { eventBus, phonesMatch } from './eventBus.js';
 import { AUTH_TOKENS } from './config.js';
-import { osEngine, checkBankersSafety } from './osEngine/index.js';
+import { hashPassword, verifyPassword, signToken } from './auth.js';
+import {
+  checkBankersSafety,
+  sanitizeRequestedResources,
+  sanitizeOtherNeeds,
+  mapIncident,
+  mapTeam,
+  suggestTeams,
+  compareSchedulers,
+  incidentsToProcesses,
+  DEMO_WORKLOAD,
+  getBuiltInDeadlockScenarios,
+  buildDeadlockFromLive,
+  producerConsumerDemo,
+  RESOURCE_KEYS,
+  RESOURCE_LABELS,
+  KEY_TO_DB_ID
+} from './osEngine/index.js';
+import {
+  liveOs,
+  osVectorToDbAllocations,
+  broadcastOsLive,
+  getOsLiveSnapshot
+} from './osEngine/runtime.js';
+import { computeOperationalIntelligence } from './intelligence.js';
 import {
   HttpError,
   badRequest,
   conflict,
   forbidden,
   notFound,
-  tooMany,
+  unauthorized,
   cleanString,
   oneOf,
   parseCoords
@@ -19,7 +43,7 @@ const SEVERITIES = ['Critical', 'High', 'Medium', 'Low'];
 const INCIDENT_STATUSES = ['Unverified', 'Verified', 'Responding', 'On site', 'Monitoring', 'Escalated', 'Resolved'];
 const RESCUE_ALLOWED_STATUSES = ['Responding', 'On site', 'Monitoring', 'Escalated', 'Resolved'];
 const TEAM_STATUSES = ['Available', 'Standby', 'Deployed', 'Returning', 'Offline', 'SOS'];
-const VOLUNTEER_STATUSES = ['Available', 'Assigned', 'Deployed', 'Offline'];
+const VOLUNTEER_STATUSES = ['Available', 'Active', 'Assigned', 'Deployed', 'Resting', 'Offline'];
 const CLIENT_ID_RE = /^[A-Za-z0-9_-]{6,64}$/;
 const CHANNEL_RE = /^[A-Za-z0-9:_-]{1,64}$/;
 
@@ -67,44 +91,130 @@ function emitTeamUpdate(team) {
 }
 
 function emitOsState() {
-  eventBus.emitRealtime('os_state', osEngine.getState());
+  return broadcastOsLive();
+}
+
+function emitIntelligenceUpdated(reason = 'update') {
+  eventBus.emitRealtime('intelligence_updated', {
+    reason,
+    at: new Date().toISOString()
+  });
+}
+
+function syncTeamRecord(team) {
+  if (!team) return;
+  liveOs.syncTeams([mapTeam(team)]);
+}
+
+function formatRequestedSummary(requestedResources, otherNeeds = []) {
+  const parts = [];
+  if (Array.isArray(requestedResources) && requestedResources.length > 0) {
+    parts.push(`Requested: ${requestedResources.map((r) => `${r.name || r.resourceId} x${r.quantity}`).join(', ')}`);
+  } else if (requestedResources && typeof requestedResources === 'object') {
+    const entries = RESOURCE_KEYS
+      .filter((k) => Number(requestedResources[k] || 0) > 0)
+      .map((k) => `${RESOURCE_LABELS[k] || k} x${requestedResources[k]}`);
+    if (entries.length > 0) parts.push(`Requested: ${entries.join(', ')}`);
+  }
+  if (Array.isArray(otherNeeds) && otherNeeds.length > 0) {
+    parts.push(`Other needs: ${otherNeeds.join(', ')}`);
+  }
+  return parts.length ? ` · ${parts.join(' · ')}` : '';
 }
 
 // ============================== auth / login ==============================
 
 export async function login(body = {}) {
-  const role = oneOf(body.role || 'rescue', ['command', 'rescue', 'citizen'], { field: 'role' });
-  const name = cleanString(body.name, { max: 80, field: 'name' }) || `${role.toUpperCase()} Operator`;
+  const rawIdentifier = cleanString(body.email || body.identifier || body.phone, { max: 120, field: 'identifier' });
+  const existingUser = rawIdentifier ? await db.getUserByIdentifier(rawIdentifier) : null;
+
+  const role = oneOf(body.role || existingUser?.role || 'rescue', ['command', 'rescue', 'citizen'], { field: 'role' });
+  const rawName = cleanString(body.name, { max: 80, field: 'name' });
+  const derivedName = existingUser?.name
+    || (rawName && !rawName.includes('@') ? rawName : null)
+    || (rawIdentifier && rawIdentifier.includes('@') ? rawIdentifier.split('@')[0] : rawName)
+    || `${role.toUpperCase()} Operator`;
+
+  if (existingUser && existingUser.passwordHash && body.password !== undefined) {
+    const ok = await verifyPassword(String(body.password), existingUser.passwordHash);
+    if (!ok) {
+      throw unauthorized('Invalid email or password');
+    }
+  }
 
   let team = null;
   if (role === 'rescue') {
-    const teamName = cleanString(body.teamName ?? body.team?.name, { max: 80, field: 'teamName' }) || name;
+    const teamName = cleanString(body.teamName ?? body.team?.name, { max: 80, field: 'teamName' }) || derivedName;
     const callsign = cleanString(body.callsign ?? body.team?.callsign, { max: 30, field: 'callsign' }) || null;
     const specialization = cleanString(body.specialization ?? body.team?.specialization, { max: 80, field: 'specialization' }) || 'SAR';
     const respondersRaw = body.responders ?? body.team?.responders;
     const responders = Number.isInteger(respondersRaw) && respondersRaw >= 1 && respondersRaw <= 100 ? respondersRaw : 4;
 
     const result = await db.findOrCreateTeam({
-      teamId: body.teamId || body.team?.id || null,
+      teamId: body.teamId || body.team?.id || existingUser?.teamId || null,
       name: teamName,
       callsign,
       specialization,
       responders,
-      createdBy: name
+      createdBy: derivedName
     });
     team = result.team;
+    syncTeamRecord(team);
     if (result.created) {
       eventBus.emitRealtime('team_registered', { team });
+      emitOsState();
+      emitIntelligenceUpdated('team_registered');
     }
   }
 
+  const isEmail = Boolean(rawIdentifier && rawIdentifier.includes('@'));
+  let dbUser = existingUser;
+  if (!dbUser && rawIdentifier && body.password) {
+    const pwHash = await hashPassword(String(body.password));
+    dbUser = await db.upsertUser({
+      name: derivedName,
+      email: isEmail ? rawIdentifier : (body.email || null),
+      phone: !isEmail ? rawIdentifier : (body.phone || null),
+      passwordHash: pwHash,
+      role,
+      teamId: team?.id || null
+    });
+  }
+
+  const resolvedPhone =
+    dbUser?.phone ||
+    (!isEmail && rawIdentifier ? rawIdentifier : cleanString(body.phone, { max: 30, field: 'phone' }) || '');
+  const citizenFallbackId =
+    role === 'citizen' && rawIdentifier
+      ? `usr-cit-${crypto.createHash('sha256').update(rawIdentifier.trim().toLowerCase()).digest('hex').slice(0, 12)}`
+      : `usr-${role}`;
+
+  const userObj = {
+    id: dbUser?.id || (team ? `usr-${team.id}` : citizenFallbackId),
+    name: dbUser?.name || derivedName,
+    email: dbUser?.email || (isEmail ? rawIdentifier : ''),
+    phone: dbUser?.phone || resolvedPhone,
+    role: dbUser?.role || role,
+    teamId: team?.id || dbUser?.teamId || null
+  };
+
+  const signed = signToken({
+    sub: userObj.id,
+    id: userObj.id,
+    name: userObj.name,
+    email: userObj.email,
+    phone: userObj.phone,
+    role: userObj.role,
+    teamId: userObj.teamId
+  });
+
   return {
     success: true,
-    role,
-    user: { id: team ? `usr-${team.id}` : `usr-${role}`, name, role, teamId: team?.id || null },
-    teamId: team?.id || null,
+    role: userObj.role,
+    user: userObj,
+    teamId: userObj.teamId,
     team,
-    token: AUTH_TOKENS[role] || null
+    token: signed.token || AUTH_TOKENS[userObj.role] || null
   };
 }
 
@@ -154,23 +264,27 @@ export async function createCitizenSos(user, body) {
   const severity = oneOf(body.severity, SEVERITIES, { field: 'severity', fallback: 'High' });
   const type = cleanString(body.type, { max: 50, field: 'type' }) || 'General';
 
-  const normalizedRequested = normalizeResourceRequests(body.resources ?? body.requestedResources);
+  const otherNeeds = sanitizeOtherNeeds(body.otherNeeds);
+  const rawResources = body.requestedResources ?? body.resources;
   let requestedResources = [];
-  if (normalizedRequested.length > 0) {
-    const { resources: catalog } = await db.getResourcesSnapshot();
-    const byId = new Map(catalog.map((r) => [r.id, r]));
-    requestedResources = normalizedRequested
-      .filter((item) => byId.has(item.resourceId))
-      .map((item) => {
-        const res = byId.get(item.resourceId);
-        const cap = Math.max(Number(res.total) || 100, 1);
-        const quantity = Math.min(Math.max(1, item.quantity), cap);
-        return { resourceId: item.resourceId, name: res.name, quantity };
-      });
+  if (rawResources && !Array.isArray(rawResources) && typeof rawResources === 'object') {
+    requestedResources = sanitizeRequestedResources(rawResources) || [];
+  } else {
+    const normalizedRequested = normalizeResourceRequests(rawResources);
+    if (normalizedRequested.length > 0) {
+      const { resources: catalog } = await db.getResourcesSnapshot();
+      const byId = new Map(catalog.map((r) => [r.id, r]));
+      requestedResources = normalizedRequested
+        .filter((item) => byId.has(item.resourceId))
+        .map((item) => {
+          const res = byId.get(item.resourceId);
+          const cap = Math.max(Number(res.total) || 100, 1);
+          const quantity = Math.min(Math.max(1, item.quantity), cap);
+          return { resourceId: item.resourceId, name: res.name, quantity };
+        });
+    }
   }
-  const resourceSummary = requestedResources.length
-    ? ` · Requested: ${requestedResources.map((r) => `${r.name} x${r.quantity}`).join(', ')}`
-    : '';
+  const resourceSummary = formatRequestedSummary(requestedResources, otherNeeds);
 
   let clientId = null;
   if (body.id !== undefined && body.id !== null && body.id !== '') {
@@ -184,45 +298,36 @@ export async function createCitizenSos(user, body) {
     }
   }
 
-  const candidateId = clientId || db.generateIncidentId();
-  const admission = osEngine.admitIncident({ id: candidateId, title, severity, type, affected });
-  if (!admission.accepted) {
-    throw tooMany(admission.error, { retryAfter: admission.retryAfter });
-  }
+  const incident = await createIncidentRecord(
+    {
+      title,
+      type,
+      location,
+      area: cleanString(body.fullAddress, { max: 300, field: 'fullAddress' }) || location,
+      affected,
+      severity,
+      status: 'Unverified',
+      responseSummary: 'Citizen SOS · Awaiting verification',
+      responseDetail: 'Verify to respond',
+      substatus: coords ? 'Awaiting triage by Command Center' : 'Awaiting triage · no GPS fix supplied',
+      description: description || 'Emergency assistance requested.',
+      fieldReport: `Citizen reported · Contact: ${contactNumber || 'N/A'}${resourceSummary}`,
+      contactNumber,
+      citizenName: cleanString(body.citizenName, { max: 100, field: 'citizenName' }) || user.name || 'Citizen',
+      citizenUserId: user.id || null,
+      isCitizenSOS: true,
+      requestedResources,
+      otherNeeds,
+      createdBy: user.id || 'citizen',
+      coords
+    },
+    { clientId }
+  );
 
-  let incident;
-  try {
-    incident = await createIncidentRecord(
-      {
-        title,
-        type,
-        location,
-        area: cleanString(body.fullAddress, { max: 300, field: 'fullAddress' }) || location,
-        affected,
-        severity,
-        status: 'Unverified',
-        responseSummary: 'Citizen SOS · Awaiting verification',
-        responseDetail: 'Verify to respond',
-        substatus: coords ? 'Awaiting triage by Command Center' : 'Awaiting triage · no GPS fix supplied',
-        description: description || 'Emergency assistance requested.',
-        fieldReport: `Citizen reported · Contact: ${contactNumber || 'N/A'}${resourceSummary}`,
-        contactNumber,
-        citizenName: cleanString(body.citizenName, { max: 100, field: 'citizenName' }) || user.name || 'Citizen',
-        citizenUserId: user.id || null,
-        isCitizenSOS: true,
-        requestedResources,
-        createdBy: user.id || 'citizen',
-        coords
-      },
-      { clientId: candidateId }
-    );
-  } catch (err) {
-    osEngine.completePcb(candidateId);
-    throw err;
-  }
-
+  liveOs.admit(mapIncident(incident));
   eventBus.emitRealtime('new_citizen_sos', incident);
   emitOsState();
+  emitIntelligenceUpdated('new_citizen_sos');
   return { incident, duplicate: false };
 }
 
@@ -297,10 +402,45 @@ export async function dispatchTeam(user, body) {
   const notes = cleanString(body.notes, { max: 500, field: 'notes' });
   const fieldReport = notes ? `${incident.fieldReport || ''} · ${notes}`.trim() : null;
 
-  // Banker's algorithm safety check + DB allocate_resource commit when resources are requested
-  const resourceItems = normalizeResourceRequests(body.resources);
-  if (resourceItems.length > 0) {
-    const snap = await db.getResourcesSnapshot();
+  // Ensure live OS engine tracks this incident and reflects current DB team availability
+  if (!liveOs._internal.pcbs.has(incident.id)) {
+    liveOs.admit(mapIncident(incident));
+  }
+  const existingLiveTeam = liveOs._internal.teams.get(team.id);
+  if (!existingLiveTeam || team.status !== 'Available' || existingLiveTeam.status === 'Available') {
+    syncTeamRecord(team);
+  }
+
+  // Optional explicit DB resource items (e.g. drone, helicopter, or explicit dispatch override)
+  const explicitResourceItems = normalizeResourceRequests(body.resources);
+  const osIdSet = new Set(Object.values(KEY_TO_DB_ID));
+  const extraResourceItems = explicitResourceItems.filter((item) => !osIdSet.has(item.resourceId));
+
+  // If dispatching fresh and caller explicitly specified OS-tracked resource overrides, apply before Banker check
+  const livePcbBefore = liveOs._internal.pcbs.get(incident.id);
+  if (livePcbBefore && livePcbBefore.state === 'READY' && explicitResourceItems.length > 0) {
+    const dbIdToKey = Object.fromEntries(Object.entries(KEY_TO_DB_ID).map(([k, v]) => [v, k]));
+    let hasOsOverride = false;
+    const overrideReq = { ...livePcbBefore.request };
+    for (const item of explicitResourceItems) {
+      const osKey = dbIdToKey[item.resourceId];
+      if (osKey) {
+        hasOsOverride = true;
+        overrideReq[osKey] = Math.max(0, Math.min(liveOs._internal.banker.total[osKey] ?? item.quantity, item.quantity));
+      }
+    }
+    if (hasOsOverride) {
+      livePcbBefore.request = overrideReq;
+      livePcbBefore.maximum = { ...overrideReq };
+      const bp = liveOs._internal.banker.processes.find((p) => p.pid === incident.id);
+      if (bp) bp.maximum = { ...overrideReq };
+    }
+  }
+
+  // Check extra non-OS DB resources via Banker if supplied
+  const snap = await db.getResourcesSnapshot();
+  const catalogById = new Map(snap.resources.map((r) => [r.id, r]));
+  if (extraResourceItems.length > 0) {
     const available = {};
     for (const r of snap.resources) available[r.id] = Number(r.available);
 
@@ -318,7 +458,7 @@ export async function dispatchTeam(user, body) {
 
     const requestMap = {};
     maxNeeds[incident.id] ||= { ...(allocations[incident.id] || {}) };
-    for (const item of resourceItems) {
+    for (const item of extraResourceItems) {
       requestMap[item.resourceId] = (requestMap[item.resourceId] || 0) + item.quantity;
       maxNeeds[incident.id][item.resourceId] = Math.max(
         maxNeeds[incident.id][item.resourceId] || 0,
@@ -336,15 +476,37 @@ export async function dispatchTeam(user, body) {
     if (!safety.safe) {
       throw conflict(safety.reason);
     }
-
-    try {
-      await db.allocateResourcesBatch(incident.id, resourceItems);
-    } catch (err) {
-      throw mapPgLockOrResourceError(err);
-    }
   }
 
+  // 1. Check team mutex + Banker's safety in OS engine BEFORE touching DB
+  const isReassign = Boolean(incident.assignedTeamId && incident.assignedTeamId !== team.id);
+  const osResult = incident.assignedTeamId
+    ? liveOs.assign(incident.id, mapTeam(team))
+    : liveOs.dispatch(incident.id, mapTeam(team));
+
+  if (!osResult.success) {
+    emitOsState();
+    throw new HttpError(osResult.status || 409, osResult.message);
+  }
+
+  // 2. Commit resource allocations + team assignment to PostgreSQL; roll back OS engine if DB save fails
+  const osAllocItems = isReassign
+    ? []
+    : osVectorToDbAllocations(osResult.pcb?.allocation || {}, catalogById);
+  const allocMap = new Map(osAllocItems.map((i) => [i.resourceId, i]));
+  for (const extra of extraResourceItems) {
+    if (catalogById.has(extra.resourceId)) {
+      allocMap.set(extra.resourceId, extra);
+    }
+  }
+  const dbAllocItems = [...allocMap.values()];
+
+  let allocatedInDb = false;
   try {
+    if (dbAllocItems.length > 0) {
+      await db.allocateResourcesBatch(incident.id, dbAllocItems);
+      allocatedInDb = true;
+    }
     await db.assignTeamAtomic({
       incidentId: incident.id,
       teamId: team.id,
@@ -353,18 +515,24 @@ export async function dispatchTeam(user, body) {
       teamName: team.name,
       fieldReport
     });
+    if (isReassign) {
+      const freedOld = await db.releaseOldTeamAssignment(incident.id, incident.assignedTeamId);
+      if (freedOld) {
+        syncTeamRecord(freedOld);
+        emitTeamUpdate(freedOld);
+      }
+    }
   } catch (err) {
+    if (allocatedInDb) {
+      await db.releaseIncidentAllocations(incident.id).catch(() => {});
+    }
+    liveOs.complete(incident.id);
+    emitOsState();
     throw mapPgLockOrResourceError(err);
   }
 
   const updated = await db.getIncidentById(incident.id);
   const updatedTeam = await db.getTeamById(team.id);
-
-  try {
-    osEngine.dispatchPcb(updated, team.id);
-  } catch (err) {
-    throw mapPgLockOrResourceError(err);
-  }
 
   eventBus.emitRealtime('incident_assigned', {
     incidentId: updated.id,
@@ -378,7 +546,8 @@ export async function dispatchTeam(user, body) {
   });
   emitTeamUpdate(updatedTeam);
   emitOsState();
-  return { incident: updated, team: updatedTeam };
+  emitIntelligenceUpdated('incident_assigned');
+  return { incident: updated, team: updatedTeam, osResult };
 }
 
 export async function verifyIncident(user, body) {
@@ -391,11 +560,14 @@ export async function verifyIncident(user, body) {
     responseDetail: 'Ready to assign',
     substatus: 'Verified by Command Center'
   });
+  liveOs.updateFromIncident(mapIncident(updated));
   eventBus.emitRealtime('incident_verified', {
     incidentId: updated.id,
     incident: updated,
     citizenUserId: updated.citizenUserId
   });
+  emitOsState();
+  emitIntelligenceUpdated('incident_verified');
   return updated;
 }
 
@@ -428,8 +600,21 @@ export async function updateIncidentStatus(user, body) {
   }
 
   if (status === 'Resolved') {
-    await db.resolveIncidentAtomic(incident.id, incident.assignedTeamId);
-    osEngine.completePcb(incident.id);
+    const atomicRes = await db.resolveIncidentAtomic(incident.id, incident.assignedTeamId);
+    const releasedVolunteers = Array.isArray(atomicRes?.releasedVolunteers)
+      ? atomicRes.releasedVolunteers
+      : [];
+    liveOs.complete(incident.id);
+
+    for (const vol of releasedVolunteers) {
+      eventBus.emitRealtime('volunteer_updated', { volunteer: vol });
+    }
+    if (releasedVolunteers.length > 0) {
+      eventBus.emitRealtime('volunteers_released', {
+        incidentId: incident.id,
+        volunteers: releasedVolunteers
+      });
+    }
 
     if (incident.assignedTeamId) {
       const remaining = await db.countActiveIncidentsForTeam(incident.assignedTeamId);
@@ -439,9 +624,13 @@ export async function updateIncidentStatus(user, body) {
           task: null,
           eta: null
         });
+        syncTeamRecord(freedTeam);
         emitTeamUpdate(freedTeam);
       }
     }
+    emitOsState();
+  } else {
+    liveOs.updateFromIncident(mapIncident(updated));
     emitOsState();
   }
 
@@ -452,6 +641,7 @@ export async function updateIncidentStatus(user, body) {
     incident: updated,
     citizenUserId: updated.citizenUserId
   });
+  emitIntelligenceUpdated('incident_status_changed');
   return updated;
 }
 
@@ -465,7 +655,16 @@ export async function reportFieldIncident(user, body) {
   const type = cleanString(body.type, { max: 50, field: 'type' }) || 'Field Report';
   const affected = Number.isInteger(body.affected) && body.affected > 0 && body.affected <= 100000 ? body.affected : 1;
 
-  const team = body.teamId ? await db.getTeamById(body.teamId) : null;
+  const rawTeamId = body.teamId || user?.teamId || null;
+  let team = rawTeamId ? await db.getTeamById(rawTeamId) : null;
+  if (!team && body.teamName) {
+    team = await db.getTeamByName(cleanString(body.teamName, { max: 80, field: 'teamName' }));
+  }
+  const rawReq = body.requestedResources ?? body.resources;
+  const requestedResources = rawReq && !Array.isArray(rawReq) && typeof rawReq === 'object'
+    ? sanitizeRequestedResources(rawReq) || []
+    : [];
+  const otherNeeds = sanitizeOtherNeeds(body.otherNeeds);
   const incident = await createIncidentRecord({
     title,
     type,
@@ -482,13 +681,19 @@ export async function reportFieldIncident(user, body) {
     description: cleanString(body.description, { max: 2000, field: 'description' }),
     fieldReport: cleanString(body.notes, { max: 500, field: 'notes' }),
     isCitizenSOS: false,
+    requestedResources,
+    otherNeeds,
     createdBy: user.id || user.role,
     coords
   });
 
-  osEngine.admitIncident(incident);
+  liveOs.admit(mapIncident(incident));
+  if (team) {
+    liveOs.dispatch(incident.id, mapTeam(team));
+  }
   eventBus.emitRealtime('incident_reported', incident);
   emitOsState();
+  emitIntelligenceUpdated('incident_reported');
   return incident;
 }
 
@@ -539,7 +744,10 @@ export async function postTelemetry(user, body) {
     heading: numberInRange(body.heading, 0, 360, 'heading')
   });
 
+  syncTeamRecord(updated);
   emitTeamUpdate(updated);
+  if (updated.status !== team.status) emitOsState();
+  emitIntelligenceUpdated('telemetry_recorded');
   return updated;
 }
 
@@ -550,7 +758,10 @@ export async function setTeamStatus(user, body) {
   if (!team) throw notFound('Team not found');
   const status = oneOf(body.status, TEAM_STATUSES.filter((s) => s !== 'SOS'), { field: 'status' });
   const updated = await db.updateTeam(team.id, { status });
+  syncTeamRecord(updated);
   emitTeamUpdate(updated);
+  emitOsState();
+  emitIntelligenceUpdated('team_status_changed');
   return updated;
 }
 
@@ -604,10 +815,12 @@ export async function createRescueSos(user, body) {
     ...(body.battery !== undefined ? { battery: Math.round(numberInRange(body.battery, 0, 100, 'battery')) } : {})
   });
 
-  osEngine.admitIncident(incident);
+  liveOs.admit(mapIncident(incident));
+  syncTeamRecord(updatedTeam);
   emitTeamUpdate(updatedTeam);
   eventBus.emitRealtime('new_rescue_sos', { incident, sosEvent, team: updatedTeam });
   emitOsState();
+  emitIntelligenceUpdated('new_rescue_sos');
   return { incident, sosEvent, team: updatedTeam };
 }
 
@@ -618,11 +831,62 @@ export async function resolveSos(user, sosId) {
   if (existing.teamId) {
     const t = await db.getTeamById(existing.teamId);
     if (t && t.status === 'SOS') {
-      emitTeamUpdate(await db.updateTeam(t.id, { status: 'Available', task: null }));
+      const updatedTeam = await db.updateTeam(t.id, { status: 'Available', task: null });
+      syncTeamRecord(updatedTeam);
+      emitTeamUpdate(updatedTeam);
     }
   }
   eventBus.emitRealtime('sos_resolved', { sosEvent: resolved });
+  emitOsState();
+  emitIntelligenceUpdated('sos_resolved');
   return resolved;
+}
+
+export async function createTeam(user, body = {}) {
+  const name = cleanString(body.name ?? body.teamName, { max: 80, required: true, field: 'name' });
+  const existing = await db.getTeamByName(name);
+  if (existing) {
+    throw conflict(`Rescue team '${name}' already exists`);
+  }
+
+  const callsign = cleanString(body.callsign, { max: 30, field: 'callsign' }) || null;
+  const specialization = cleanString(body.specialization ?? body.type, { max: 80, field: 'specialization' }) || 'SAR';
+  const status = body.status
+    ? oneOf(body.status, TEAM_STATUSES.filter((s) => s !== 'SOS'), { field: 'status' })
+    : 'Available';
+  const rawResp = Number(body.responders ?? body.personnel ?? 4);
+  const responders = Number.isFinite(rawResp)
+    ? Math.min(Math.max(Math.round(rawResp), 1), 100)
+    : 4;
+  const commanderName = cleanString(body.commanderName ?? body.lead, { max: 80, field: 'commanderName' }) || user?.name || null;
+  const commanderPhone = cleanString(body.commanderPhone ?? body.phone, { max: 30, field: 'commanderPhone' }) || null;
+  const frequency = cleanString(body.frequency, { max: 40, field: 'frequency' }) || 'Ch 4A (156.8MHz)';
+  const sectorLabel = cleanString(body.sector ?? body.sectorLabel, { max: 120, field: 'sector' }) || null;
+  const coords = resolveCoords(body, null);
+  const resolvedSector = coords ? await db.findSectorForPoint(coords.lat, coords.lng) : null;
+  const sectorId = cleanString(body.sectorId, { max: 64, field: 'sectorId' }) || resolvedSector?.id || null;
+
+  const team = await db.createTeam({
+    name,
+    callsign,
+    specialization,
+    status,
+    responders,
+    createdBy: user?.name || commanderName || user?.id || 'rescue',
+    sectorId,
+    sectorLabel,
+    commanderName,
+    commanderPhone,
+    frequency,
+    lat: coords?.lat ?? null,
+    lng: coords?.lng ?? null
+  });
+
+  syncTeamRecord(team);
+  eventBus.emitRealtime('team_registered', { team });
+  emitOsState();
+  emitIntelligenceUpdated('team_registered');
+  return team;
 }
 
 export async function listTeams() {
@@ -632,10 +896,137 @@ export async function listTeams() {
 // ============================== chat ==============================
 
 export const DEFAULT_CHANNEL = 'command-net';
+export const INCIDENT_CHAT_PREFIX = 'incident-';
+
+function incidentChannelId(incidentId) {
+  return `${INCIDENT_CHAT_PREFIX}${incidentId}`;
+}
+
+function hasAssignedTeam(incident) {
+  return Boolean(
+    (incident?.assignedTeamId && String(incident.assignedTeamId).trim()) ||
+    (incident?.assignedTeam && String(incident.assignedTeam).trim())
+  );
+}
+
+async function resolveEffectiveUser(user) {
+  if (!user || user.role !== 'citizen' || user.phone || !user.id) return user;
+  const dbUser = (await db.getUserById(user.id))
+    || (user.email ? await db.getUserByIdentifier(user.email) : null);
+  if (!dbUser?.phone) return user;
+  return { ...user, phone: dbUser.phone };
+}
+
+function canAccessIncidentChat(user, incident) {
+  if (!user || !incident) return false;
+  if (user.role === 'command') return true;
+  if (user.role === 'rescue') {
+    return Boolean(user.teamId && incident.assignedTeamId && incident.assignedTeamId === user.teamId);
+  }
+  if (user.role === 'citizen') {
+    const ownerMatch = Boolean(
+      user.id && (incident.citizenUserId === user.id || incident.createdBy === user.id)
+    );
+    const phoneMatch = Boolean(user.phone && incident.contactNumber && phonesMatch(incident.contactNumber, user.phone));
+    return ownerMatch || phoneMatch;
+  }
+  return false;
+}
+
+function assertIncidentChatAccess(user, incident, { requireAssigned = false } = {}) {
+  if (!canAccessIncidentChat(user, incident)) {
+    throw forbidden('Access denied to this incident chat');
+  }
+  if (requireAssigned && !hasAssignedTeam(incident)) {
+    throw conflict('Cannot chat until a rescue team is assigned to this report');
+  }
+}
+
+function emitIncidentChatMessage(incident, message) {
+  eventBus.emitRealtime('new_chat_message', {
+    channel: incidentChannelId(incident.id),
+    incidentId: incident.id,
+    message,
+    _assignedTeamId: incident.assignedTeamId || null,
+    _citizenUserId: incident.citizenUserId || null,
+    _contactNumber: incident.contactNumber || ''
+  });
+}
+
+export async function listIncidentChat(user, incidentId, { limit, since } = {}) {
+  const incident = await db.getIncidentById(incidentId);
+  if (!incident) throw notFound('Incident not found');
+  const effectiveUser = await resolveEffectiveUser(user);
+  assertIncidentChatAccess(effectiveUser, incident, { requireAssigned: false });
+  const channel = incidentChannelId(incident.id);
+  const max = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 500);
+  const messages = await db.getChannelMessages(channel, { limit: max, since });
+  return {
+    incidentId: incident.id,
+    channel,
+    assigned: hasAssignedTeam(incident),
+    assignedTeam: incident.assignedTeam || null,
+    assignedTeamId: incident.assignedTeamId || null,
+    messages
+  };
+}
+
+export async function sendIncidentChat(user, incidentId, body = {}) {
+  const incident = await db.getIncidentById(incidentId);
+  if (!incident) throw notFound('Incident not found');
+  const effectiveUser = await resolveEffectiveUser(user);
+  assertIncidentChatAccess(effectiveUser, incident, { requireAssigned: true });
+
+  const channel = incidentChannelId(incident.id);
+  if (!CHANNEL_RE.test(channel)) throw badRequest('channel must be 1-64 chars of [A-Za-z0-9:_-]');
+  const text = cleanString(body.text, { max: 2000, required: true, field: 'text' });
+
+  let id = null;
+  if (body.id !== undefined && body.id !== null && body.id !== '') {
+    if (typeof body.id !== 'string' || !CLIENT_ID_RE.test(body.id)) {
+      throw badRequest('id must be 6-64 chars of [A-Za-z0-9_-]');
+    }
+    id = body.id;
+    const existing = await db.getMessageById(id);
+    if (existing) {
+      if (existing.channel !== channel) {
+        throw conflict('Message id belongs to a different channel');
+      }
+      return { channel, incidentId: incident.id, message: existing, duplicate: true };
+    }
+  }
+
+  const defaultRoleLabel =
+    user.role === 'citizen'
+      ? 'Citizen'
+      : user.role === 'command'
+        ? 'Command Operator'
+        : incident.assignedTeam || 'Rescue Team';
+  const senderLabel = cleanString(body.sender, { max: 80, field: 'sender' }) || user.name || user.role;
+
+  const message = await db.insertMessage({
+    id,
+    channel,
+    sender: senderLabel,
+    senderId: user.id || user.role,
+    senderRole: user.role,
+    role: cleanString(body.role, { max: 60, field: 'role' }) || defaultRoleLabel,
+    initials: initialsOf(senderLabel),
+    text,
+    locationTag: cleanString(body.locationTag, { max: 200, field: 'locationTag' }),
+    isAlert: user.role === 'command' && body.isAlert === true
+  });
+  emitIncidentChatMessage(incident, message);
+  return { channel, incidentId: incident.id, message, duplicate: false };
+}
 
 export async function sendChat(user, body) {
   const channel = cleanString(body.channel, { max: 64, field: 'channel' }) || DEFAULT_CHANNEL;
   if (!CHANNEL_RE.test(channel)) throw badRequest('channel must be 1-64 chars of [A-Za-z0-9:_-]');
+  if (channel.startsWith(INCIDENT_CHAT_PREFIX)) {
+    const incidentId = channel.slice(INCIDENT_CHAT_PREFIX.length);
+    return sendIncidentChat(user, incidentId, body);
+  }
   const text = cleanString(body.text, { max: 2000, required: true, field: 'text' });
 
   let id = null;
@@ -665,12 +1056,34 @@ export async function sendChat(user, body) {
 }
 
 export async function listMessages({ channel, limit, since, user } = {}) {
+  const effectiveUser = await resolveEffectiveUser(user);
   const max = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 500);
+  if (channel && channel !== 'all' && channel.startsWith(INCIDENT_CHAT_PREFIX)) {
+    const incidentId = channel.slice(INCIDENT_CHAT_PREFIX.length);
+    const incident = await db.getIncidentById(incidentId);
+    if (!incident) throw notFound('Incident not found');
+    assertIncidentChatAccess(effectiveUser, incident, { requireAssigned: false });
+    return db.getChannelMessages(channel, { limit: max, since });
+  }
+
+  let allowedIncidentChannels = null;
+  if (effectiveUser && effectiveUser.role !== 'command') {
+    const allIncidents = await db.getAllIncidents();
+    allowedIncidentChannels = new Set(
+      allIncidents.filter((inc) => canAccessIncidentChat(effectiveUser, inc)).map((inc) => incidentChannelId(inc.id))
+    );
+  }
+
   const canSeeChannel = (ch) => {
-    if (!ch || !ch.startsWith('team-')) return true;
-    if (user?.role === 'command') return true;
-    if (user?.role === 'rescue' && user?.teamId) return ch === `team-${user.teamId}`;
-    return !user || user.role !== 'rescue';
+    if (!ch) return true;
+    if (ch.startsWith(INCIDENT_CHAT_PREFIX)) {
+      if (effectiveUser?.role === 'command') return true;
+      return Boolean(allowedIncidentChannels && allowedIncidentChannels.has(ch));
+    }
+    if (!ch.startsWith('team-')) return true;
+    if (effectiveUser?.role === 'command') return true;
+    if (effectiveUser?.role === 'rescue' && effectiveUser?.teamId) return ch === `team-${effectiveUser.teamId}`;
+    return !effectiveUser || effectiveUser.role !== 'rescue';
   };
   if (channel && channel !== 'all') {
     if (!canSeeChannel(channel)) throw forbidden('Access denied to private team channel');
@@ -720,6 +1133,7 @@ export async function updateShelter(user, body) {
   }
   const updated = await db.updateShelterOccupancy(shelter.id, occupied);
   eventBus.emitRealtime('shelter_updated', { shelter: updated });
+  emitIntelligenceUpdated('shelter_updated');
   return updated;
 }
 
@@ -736,13 +1150,15 @@ export async function updateSector(user, sectorId, body) {
 }
 
 export async function registerVolunteer(user, body) {
-  const name = cleanString(body.name, { max: 100, field: 'name' }) || user.name || 'Volunteer';
+  const suppliedName = cleanString(body.name, { max: 100, field: 'name' });
+  const name = suppliedName || user.name || 'Volunteer';
   const phone = cleanString(body.phone, { max: 30, field: 'phone' }) || '';
   const email = cleanString(body.email, { max: 120, field: 'email' }) || '';
   const skills = Array.isArray(body.skills) ? body.skills.map((s) => String(s).trim().slice(0, 40)).filter(Boolean).slice(0, 20) : [];
   const sectorId = cleanString(body.sectorId, { max: 40, field: 'sectorId' }) || null;
   if (sectorId && !(await db.getSectorById(sectorId))) throw badRequest('Unknown sectorId');
   const coords = resolveCoords(body, null);
+  const initialStatus = body.status === 'Active' || body.status === 'Available' ? body.status : 'Available';
 
   const volunteer = await db.upsertVolunteerForUser(user.id || email || name, {
     name,
@@ -750,9 +1166,11 @@ export async function registerVolunteer(user, body) {
     email,
     skills,
     sectorId,
+    initialStatus,
+    allowMultiple: user.role !== 'citizen' && Boolean(suppliedName),
     lat: coords?.lat ?? null,
     lng: coords?.lng ?? null,
-    teamId: body.teamId || null
+    teamId: null
   });
   eventBus.emitRealtime('volunteer_registered', { volunteer });
   return volunteer;
@@ -761,8 +1179,209 @@ export async function registerVolunteer(user, body) {
 export async function setVolunteerStatus(user, id, body) {
   const existing = await db.getVolunteerById(id);
   if (!existing) throw notFound('Volunteer not found');
+  if (user.role === 'citizen' && existing.userId && existing.userId !== user.id) {
+    throw forbidden('You can only update your own volunteer status');
+  }
+  if (existing.teamId && user.role !== 'command' && user.teamId !== existing.teamId) {
+    throw conflict(`Volunteer is assigned to team ${existing.assignedTeamName || existing.teamId}`);
+  }
   const status = oneOf(body.status, VOLUNTEER_STATUSES, { field: 'status' });
   const updated = await db.updateVolunteerStatus(id, status);
   eventBus.emitRealtime('volunteer_updated', { volunteer: updated });
   return updated;
+}
+
+async function resolveTargetTeam(user, body = {}, incidentId = null) {
+  const reqTeamId = cleanString(body.teamId, { max: 80, field: 'teamId' }) || user?.teamId || '';
+  const reqTeamName = cleanString(body.teamName, { max: 80, field: 'teamName' });
+  let team = reqTeamId ? await db.getTeamById(reqTeamId) : null;
+  if (!team && reqTeamName) team = await db.getTeamByName(reqTeamName);
+  if (!team && user?.role === 'command' && incidentId) {
+    const inc = await db.getIncidentById(incidentId);
+    if (inc?.assignedTeamId) team = await db.getTeamById(inc.assignedTeamId);
+  }
+  return team;
+}
+
+export async function assignVolunteer(user, volunteerId, body = {}) {
+  const incidentId = cleanString(body.incidentId, { max: 80, required: true, field: 'incidentId' });
+  const team = await resolveTargetTeam(user, body, incidentId);
+  if (!team) throw badRequest('A valid rescue team is required to assign a volunteer');
+
+  const volunteer = await db.assignVolunteerToIncidentAtomic({
+    volunteerId,
+    teamId: team.id,
+    teamName: team.name,
+    incidentId
+  });
+  eventBus.emitRealtime('volunteer_updated', { volunteer });
+  eventBus.emitRealtime('volunteer_assigned', {
+    volunteer,
+    incidentId,
+    teamId: team.id,
+    teamName: team.name
+  });
+  emitIntelligenceUpdated('volunteer_assigned');
+  return volunteer;
+}
+
+export async function unassignVolunteer(user, volunteerId, body = {}) {
+  const team = await resolveTargetTeam(user, body, null);
+  const volunteer = await db.unassignVolunteerFromIncident({
+    volunteerId,
+    teamId: team?.id || user?.teamId || null,
+    allowForce: user?.role === 'command'
+  });
+  eventBus.emitRealtime('volunteer_updated', { volunteer });
+  emitIntelligenceUpdated('volunteer_unassigned');
+  return volunteer;
+}
+
+// ============================== OS monitor & algorithms ==============================
+
+export function getOsLive() {
+  return getOsLiveSnapshot();
+}
+
+export async function updateOsResourceTotals(body = {}) {
+  const result = liveOs.setTotals(body);
+  if (!result.success) {
+    throw new HttpError(result.status || 400, result.message);
+  }
+  try {
+    await db.setResourceTotalsInDb(body);
+  } catch (err) {
+    const snap = await db.getResourcesSnapshot().catch(() => null);
+    if (snap?.resources?.length) {
+      const totals = {};
+      for (const [k, id] of Object.entries(KEY_TO_DB_ID)) {
+        const row = snap.resources.find((r) => r.id === id);
+        if (row) totals[k] = Number(row.total);
+      }
+      liveOs.setTotals(totals);
+    }
+    throw new HttpError(err?.statusCode || 400, err?.message || 'Failed to update resource totals');
+  }
+  const updatedSnapshot = emitOsState();
+  emitIntelligenceUpdated('resources_updated');
+  return updatedSnapshot;
+}
+
+function parseIntBounded(raw, fallback, min, max, field) {
+  if (raw === undefined || raw === null || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < min || n > max) {
+    throw badRequest(`${field} must be an integer between ${min} and ${max}`);
+  }
+  return n;
+}
+
+export async function getSchedulerComparison({ source = 'live', quantum = 4 } = {}) {
+  const q = parseIntBounded(quantum, 4, 1, 50, 'quantum');
+  const mode = String(source || 'live').toLowerCase() === 'demo' ? 'demo' : 'live';
+
+  if (mode === 'live') {
+    const all = await db.getAllIncidents();
+    const open = all.filter((i) => i.status !== 'Resolved').map((i) => mapIncident(i));
+    const liveProcs = incidentsToProcesses(open);
+    if (liveProcs.length >= 2) {
+      const comparison = compareSchedulers(liveProcs, { quantum: q });
+      return {
+        source: 'live',
+        requestedSource: 'live',
+        isDemoData: false,
+        quantum: q,
+        workload: liveProcs,
+        ...comparison
+      };
+    }
+    const comparison = compareSchedulers(DEMO_WORKLOAD, { quantum: q });
+    return {
+      source: 'demo',
+      requestedSource: 'live',
+      isDemoData: true,
+      fallbackReason: 'Fewer than 2 open live incidents; showing demo workload',
+      quantum: q,
+      workload: DEMO_WORKLOAD,
+      ...comparison
+    };
+  }
+
+  const comparison = compareSchedulers(DEMO_WORKLOAD, { quantum: q });
+  return {
+    source: 'demo',
+    requestedSource: 'demo',
+    isDemoData: true,
+    quantum: q,
+    workload: DEMO_WORKLOAD,
+    ...comparison
+  };
+}
+
+export function runCustomSchedulerComparison(body = {}) {
+  if (!Array.isArray(body.processes) || body.processes.length < 1 || body.processes.length > 50) {
+    throw badRequest('processes must be an array of 1 to 50 process objects');
+  }
+  const q = parseIntBounded(body.quantum, 4, 1, 50, 'quantum');
+  const cleaned = body.processes.map((p, idx) => {
+    const pid = cleanString(p?.pid || p?.id, { max: 40 }) || `P${idx + 1}`;
+    const arrival = Number(p?.arrival ?? 0);
+    const burst = Number(p?.burst);
+    const priority = Number(p?.priority ?? 50);
+    const deadline = p?.deadline !== undefined && p?.deadline !== null ? Number(p.deadline) : null;
+    if (!Number.isFinite(arrival) || arrival < 0) throw badRequest(`${pid}: arrival must be >= 0`);
+    if (!Number.isFinite(burst) || burst <= 0 || burst > 1000) throw badRequest(`${pid}: burst must be in (0, 1000]`);
+    if (!Number.isFinite(priority)) throw badRequest(`${pid}: priority must be finite`);
+    return {
+      pid,
+      arrival,
+      burst,
+      priority,
+      ...(deadline !== null && Number.isFinite(deadline) ? { deadline } : {})
+    };
+  });
+  const comparison = compareSchedulers(cleaned, { quantum: q });
+  return {
+    source: 'custom',
+    isDemoData: false,
+    quantum: q,
+    workload: cleaned,
+    ...comparison
+  };
+}
+
+export function getDeadlockAnalysis() {
+  const snapshot = getOsLiveSnapshot();
+  return {
+    scenarios: getBuiltInDeadlockScenarios(),
+    live: buildDeadlockFromLive(snapshot),
+    timestamp: snapshot.lastUpdated
+  };
+}
+
+export function getSemaphoreDemo({ capacity = 3, items = 6, consumeEvery = 2 } = {}) {
+  const cap = parseIntBounded(capacity, 3, 1, 20, 'capacity');
+  const cnt = parseIntBounded(items, 6, 1, 50, 'items');
+  const rate = parseIntBounded(consumeEvery, 2, 1, 10, 'consumeEvery');
+  return producerConsumerDemo({ capacity: cap, items: cnt, consumeEvery: rate });
+}
+
+export async function suggestTeamsForIncident(incidentId) {
+  const incident = await db.getIncidentById(incidentId);
+  if (!incident) throw notFound('Incident not found');
+  const teams = await db.getAllTeams();
+  const suggestions = suggestTeams(mapIncident(incident), teams.map(mapTeam));
+  return {
+    incidentId: incident.id,
+    incidentTitle: incident.title,
+    category: incident.type,
+    suggestions,
+    count: suggestions.length
+  };
+}
+
+export async function getOperationalIntelligence() {
+  const data = await db.getOperationalIntelligenceData();
+  const osSnapshot = getOsLiveSnapshot();
+  return computeOperationalIntelligence({ ...data, osSnapshot });
 }

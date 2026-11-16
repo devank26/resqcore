@@ -140,6 +140,9 @@ CREATE TABLE IF NOT EXISTS volunteers (
   lat            DOUBLE PRECISION,
   lng            DOUBLE PRECISION,
   team_id        TEXT,
+  assigned_incident_id TEXT,
+  assigned_team_name   TEXT,
+  assigned_at          TEXT,
   -- same 'YYYY-MM-DD HH24:MI:SS' UTC format as SQLite's datetime('now')
   registered_at  TEXT DEFAULT to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD HH24:MI:SS'),
   last_seen      TEXT DEFAULT to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD HH24:MI:SS')
@@ -477,6 +480,7 @@ INSERT INTO resources(id, name, total, available) VALUES
   ('medical_kit', 'Medical Kits', 18, 18),
   ('ambulance',   'Ambulances',    6,  6),
   ('boat',        'Rescue Boats',  4,  4),
+  ('food_pack',   'Food Packets', 500, 500),
   ('drone',       'Drones',        3,  3),
   ('helicopter',  'Helicopters',   2,  2)
 ON CONFLICT (id) DO NOTHING;
@@ -493,6 +497,10 @@ ALTER TABLE incidents ADD COLUMN IF NOT EXISTS updated_at TEXT;
 ALTER TABLE teams ADD COLUMN IF NOT EXISTS callsign TEXT;
 ALTER TABLE teams ADD COLUMN IF NOT EXISTS created_by TEXT;
 ALTER TABLE teams ADD COLUMN IF NOT EXISTS created_at TEXT;
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS commander_name TEXT;
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS commander_phone TEXT;
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS frequency TEXT;
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS sector_label TEXT;
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_id TEXT;
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_role TEXT;
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS audience TEXT DEFAULT 'all';
@@ -502,7 +510,36 @@ ALTER TABLE shelters ADD COLUMN IF NOT EXISTS amenities TEXT;
 ALTER TABLE shelters ADD COLUMN IF NOT EXISTS has_medical INTEGER DEFAULT 0;
 ALTER TABLE shelters ADD COLUMN IF NOT EXISTS has_airlift INTEGER DEFAULT 0;
 ALTER TABLE volunteers ADD COLUMN IF NOT EXISTS user_id TEXT;
+ALTER TABLE volunteers ADD COLUMN IF NOT EXISTS assigned_incident_id TEXT;
+ALTER TABLE volunteers ADD COLUMN IF NOT EXISTS assigned_team_name TEXT;
+ALTER TABLE volunteers ADD COLUMN IF NOT EXISTS assigned_at TEXT;
+CREATE INDEX IF NOT EXISTS idx_volunteers_incident ON volunteers(assigned_incident_id);
+CREATE INDEX IF NOT EXISTS idx_volunteers_team ON volunteers(team_id);
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS requested_resources_json TEXT DEFAULT '[]';
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS other_needs_json TEXT DEFAULT '[]';
+
+CREATE TABLE IF NOT EXISTS os_event_log (
+  id           SERIAL PRIMARY KEY,
+  event_type   TEXT NOT NULL,
+  pid          TEXT,
+  detail       TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_os_event_log_id ON os_event_log(id DESC);
+
+CREATE TABLE IF NOT EXISTS users (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL,
+  email         TEXT,
+  phone         TEXT,
+  password_hash TEXT,
+  role          TEXT NOT NULL DEFAULT 'citizen',
+  team_id       TEXT,
+  created_at    TEXT DEFAULT to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD HH24:MI:SS')
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_ci
+  ON users(LOWER(email)) WHERE email IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_source_ext
   ON alerts(source, external_id) WHERE source IS NOT NULL AND external_id IS NOT NULL;

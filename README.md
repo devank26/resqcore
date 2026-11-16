@@ -1,165 +1,183 @@
-# ResQCore Disaster Management Platform
+# ResQCore
 
-A unified, real-time emergency disaster management and tactical response ecosystem linking trapped citizens, rapid rescue field operatives, and centralized command centers.
+ResQCore is a real-time disaster management and emergency response platform that connects citizens, rescue teams, and command-center operators in a single coordinated workflow.
 
----
+It supports:
+- Citizen SOS reporting and location sharing
+- Live incident monitoring and triage
+- Rescue team dispatch and status tracking
+- Command-center dashboards with map-based visibility
+- Realtime updates through backend event streaming
 
-## 🏗️ Platform Architecture & File Locations
+## Overview
 
-| Component | Technology | Directory | Default Port / Target | Description |
-|-----------|-----------|-----------|------------------------|-------------|
-| **Unified Real-Time Backend** | Node.js, Express, SSE, WebSockets, SQLite | [`backend/`](file:///c:/resqcore-disaster%20mangment%20platform/backend) | `http://localhost:5000` | Real-time event bus, state persistence, dispatch engine & telemetry |
-| **Command Center Web App** | React 18, Vite, Google Maps API, Tailwind | [`resqcore/`](file:///c:/resqcore-disaster%20mangment%20platform/resqcore) | `http://localhost:5173` | Tactical overview, live incident map, team dispatch & communications |
-| **Citizen Mobile App** | Flutter (Dart), FlutterMap + Google Tiles, Geolocator | [`citizen app/`](file:///c:/resqcore-disaster%20mangment%20platform/citizen%20app) | Android / iOS / Web | 1-Touch SOS, emergency report wizard, live GPS dispatch tracking |
-| **Rescue Team Mobile App** | Flutter (Dart), Tactical Map, Background Telemetry | [`rescue team/RescueApp/`](file:///c:/resqcore-disaster%20mangment%20platform/rescue%20team/RescueApp) | Android / iOS / Web | Field operative tactical radar, incident management & team chat |
+ResQCore brings together three major interfaces:
 
----
+- Command Center Web App: operational dashboard for dispatch and response coordination
+- Citizen Mobile App: emergency reporting and status monitoring
+- Rescue Team Mobile App: tactical field operations and incident updates
 
-## ⚡ Quick Start (Local Development)
+The platform is designed for disaster response scenarios where fast situational awareness and coordinated action matter.
 
-### Option A: One-Click Windows Launcher
-Run [`start-platform.bat`](file:///c:/resqcore-disaster%20mangment%20platform/start-platform.bat) to launch both the Unified Backend (`:5000`) and Command Center (`:5173`) in independent console windows.
+## Architecture
 
-### Option B: Docker Compose (All-in-One Containerized)
+The repository is organized into the following main components:
+
+- `backend/` — Node.js + Express realtime backend with REST APIs and event streaming
+- `resqcore/` — React + Vite command-center web application
+- `citizen app/` — Flutter citizen mobile app
+- `rescue team/` — Flutter rescue-team mobile app
+- `docs/` — project documentation and architecture references
+
+## Features
+
+- 1-tap emergency reporting from citizens
+- Real-time incident stream to command center and rescue personnel
+- Live location tracking and map visualization
+- Role-based workflow for command, field, and citizen users
+- WebSocket and SSE-based event fan-out
+- SQLite-backed persistence for operational state
+- Docker and local development startup scripts
+
+## Repository Structure
+
+```text
+resqcore/
+├── backend/
+│   ├── server.js
+│   ├── package.json
+│   ├── db.json
+│   └── ...
+├── resqcore/
+│   ├── src/
+│   ├── package.json
+│   ├── vite.config.js
+│   └── ...
+├── citizen app/
+│   ├── lib/
+│   ├── pubspec.yaml
+│   └── ...
+├── rescue team/
+│   ├── RescueApp/
+│   └── ...
+├── docs/
+├── README.md
+├── docker-compose.yml
+├── DEPLOY.md
+├── start-platform.bat
+├── start-backend.bat
+├── run-drill.bat
+└── ...
+```
+
+## Prerequisites
+
+Before running the platform locally, make sure you have:
+
+- Node.js 18+ and npm
+- Flutter SDK
+- Docker (optional, for containerized setup)
+- A browser for the command-center app
+
+## Quick Start
+
+### Option 1: Start with the bundled scripts
+
+From the repository root:
+
+```bash
+./start-platform.bat
+```
+
+On Windows, this script starts the backend and command-center app together.
+
+### Option 2: Run backend manually
+
+```bash
+cd backend
+npm install
+node server.js
+```
+
+The backend listens on:
+
+- `http://localhost:5000`
+
+### Option 3: Run the command-center web app manually
+
+```bash
+cd resqcore
+npm install
+npm run dev
+```
+
+The app runs on:
+
+- `http://localhost:5173`
+
+### Option 4: Run the mobile apps
+
+Citizen app:
+
+```bash
+cd "citizen app"
+flutter pub get
+flutter run
+```
+
+Rescue team app:
+
+```bash
+cd "rescue team/RescueApp"
+flutter pub get
+flutter run
+```
+
+## Docker Setup
+
+To run the project using Docker Compose:
+
 ```bash
 docker compose up --build
 ```
-- **Backend API**: `http://localhost:5000`
-- **Command Center**: `http://localhost:5173`
 
-### Option C: Manual Launch
-1. **Launch Unified Backend**:
-   ```bash
-   cd backend
-   node server.js
-   ```
-2. **Launch Command Center**:
-   ```bash
-   cd resqcore
-   npm install
-   npm run dev
-   ```
-3. **Launch Citizen Mobile App**:
-   ```bash
-   cd "citizen app"
-   flutter run
-   ```
-4. **Launch Rescue Team App**:
-   ```bash
-   cd "rescue team/RescueApp"
-   flutter run
-   ```
+This starts the core backend and frontend services using the included compose configuration.
 
----
+## Environment and Configuration
 
-## 📦 Production Deployment Guide
+Key configuration areas include:
 
-### 1. Unified Backend Deployment (`backend/`)
+- Backend port and runtime behavior in `backend/server.js`
+- Frontend app configuration in `resqcore/`
+- Google Maps and API-related settings in the respective app source files
+- Mobile host configuration for local and production endpoints
 
-#### A. Deploy to Render / Railway / Fly.io / Heroku:
-1. Point your service to the `backend/` folder.
-2. Build Command: `npm install --production`
-3. Start Command: `node server.js`
-4. Set Environment Variables:
-   - `PORT=5000` (or leave default to provider's `$PORT`)
-   - `NODE_ENV=production`
+## Deployment
 
-#### B. Deploy to Linux VPS (Ubuntu / Debian / AWS EC2 / DigitalOcean):
+For production deployment, see the project deployment notes in:
+
+- `DEPLOY.md`
+
+The repository also includes deployment and architecture reference documents for the overall platform design.
+
+## Demo and Testing
+
+The project includes scripts and tools for realistic workflow simulation:
+
 ```bash
-# 1. Install Node.js 20 & PM2
-sudo apt update && sudo apt install -y nodejs npm
-sudo npm install -g pm2
-
-# 2. Clone repository & install dependencies
-cd "c:/resqcore-disaster mangment platform/backend" # or /var/www/resqcore/backend
-npm install --production
-
-# 3. Start daemon process with PM2
-pm2 start server.js --name resqcore-backend
-pm2 save
-pm2 startup
-```
-
----
-
-### 2. Command Center Web App Deployment (`resqcore/`)
-
-#### A. Build Static Assets:
-```bash
-cd resqcore
-npm run build
-```
-The compiled, optimized production files will be in [`resqcore/dist/`](file:///c:/resqcore-disaster%20mangment%20platform/resqcore/dist).
-
-#### B. Deploy to Vercel / Netlify / Cloudflare Pages / Firebase:
-- **Build Command**: `npm run build`
-- **Output Directory**: `dist`
-- **Proxy Configuration**: Redirect `/api/*` to your production backend URL (e.g. `https://api.yourdomain.com/api/:splat`).
-
-#### C. Deploy via Nginx on VPS:
-Use the provided [`resqcore/nginx.conf`](file:///c:/resqcore-disaster%20mangment%20platform/resqcore/nginx.conf) which already includes caching, client routing (`try_files`), and unbuffered reverse-proxying for real-time SSE (`/api/stream`).
-
----
-
-### 3. Mobile Apps Deployment (Citizen App & Rescue Team App)
-
-#### A. Network Configuration for Production
-In [`citizen app/lib/services/command_center_service.dart`](file:///c:/resqcore-disaster%20mangment%20platform/citizen%20app/lib/services/command_center_service.dart) and [`rescue team/RescueApp/lib/services/tactical_sync_service.dart`](file:///c:/resqcore-disaster%20mangment%20platform/rescue%20team/RescueApp/lib/services/tactical_sync_service.dart), add your public production backend domain or server IP to `candidateHosts`:
-```dart
-static const List<String> candidateHosts = [
-  'https://api.yourdomain.com', // <-- Your production server
-  'http://10.0.2.2:5000',       // Android emulator fallback
-  'http://localhost:5000',      // Local fallback
-];
-```
-
-#### B. Building Android Release APK & App Bundle
-```bash
-# Citizen App
-cd "citizen app"
-flutter build apk --release
-# Output: citizen app/build/app/outputs/flutter-apk/app-release.apk
-
-flutter build appbundle --release
-# Output: citizen app/build/app/outputs/bundle/release/app-release.aab (for Google Play Store)
-
-# Rescue Team App
-cd "rescue team/RescueApp"
-flutter build apk --release
-# Output: rescue team/RescueApp/build/app/outputs/flutter-apk/app-release.apk
-
-flutter build appbundle --release
-# Output: rescue team/RescueApp/build/app/outputs/bundle/release/app-release.aab
-```
-
-#### C. Building iOS (macOS required)
-```bash
-cd "citizen app"
-flutter build ipa --release
-```
-
----
-
-## 🔑 Configuration & API Keys
-
-| Parameter | Location | Default / Instructions |
-|-----------|----------|------------------------|
-| **Google Maps API Key** | `resqcore/src/utils/googleMapsConfig.js`, `citizen app/lib/screens/live_map_screen.dart`, `rescue team/RescueApp/lib/widgets/tactical_map_canvas.dart` | Configured with tactical Google satellite and road tile access. Can also be overridden at runtime in the Command Center UI via the *Google API Key* modal. |
-| **Backend Port** | `backend/server.js` | `5000` (can be overridden via `PORT` environment variable). |
-| **Command Center Port** | `resqcore/vite.config.js` | `5173` |
-
----
-
-## 🧪 Real-Time Platform Tri-Client Verification
-To simulate an end-to-end disaster drill between Citizen SOS, Command Center Dispatch, and Rescue Field Operative Telemetry:
-```bash
-# Run one-click drill
 run-drill.bat
-
-# Or run via node
-cd backend
-node live-platform-test.js
 ```
-# backup-core
-# backup-core
-# backup-core
+
+You can also run backend simulation flows directly from the backend directory.
+
+## Notes
+
+This project is actively under development and is intended to showcase an end-to-end emergency response ecosystem spanning citizen reporting, field operations, and command-center coordination.
+
+## Contributing
+
+Contributions are welcome. If you want to improve the platform, add features, or improve documentation, open a pull request with a clear description of the changes.
+
+## License
+
+This repository currently does not declare a formal license in the root project metadata. If you intend to publish or distribute it publicly, consider adding an appropriate open-source license.

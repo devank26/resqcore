@@ -8,10 +8,15 @@ import {
 import { dbManager as db } from './services/database.js';
 import { eventBus } from './services/eventBus.js';
 import { SimpleWebSocketServer } from './services/websocketServer.js';
-import { extractToken, verifyEnvBearerToken } from './services/auth.js';
+import { extractToken, verifyEnvBearerToken, verifyToken } from './services/auth.js';
 import { HttpError, badRequest, forbidden, notFound, unauthorized } from './services/errors.js';
 import * as actions from './services/actions.js';
-import { osEngine } from './services/osEngine/index.js';
+import {
+  getOsLiveSnapshot,
+  initLiveOsFromDb,
+  startLiveAgingTimer,
+  stopLiveAgingTimer
+} from './services/osEngine/runtime.js';
 import { startFeeds, stopFeeds } from './services/feeds.js';
 
 const VERSION = '3.0.0';
@@ -51,7 +56,7 @@ function applyCors(req, res) {
   if (isOriginAllowed(origin)) {
     res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGINS.includes('*') ? '*' : origin);
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Team-Id');
     res.setHeader('Access-Control-Max-Age', '600');
   }
 }
@@ -104,18 +109,47 @@ function readJson(req) {
 function authenticate(req, url) {
   const token = extractToken(req, url);
   if (!token) return null;
-  const role = verifyEnvBearerToken(token);
-  if (!role) return null;
   const headerTeamId = req.headers['x-team-id'];
   const queryTeamId = url?.searchParams?.get('teamId');
+  const resolvedTeamId = (typeof headerTeamId === 'string' && headerTeamId.trim()) || (queryTeamId && queryTeamId.trim()) || null;
+
+  const jwtClaims = verifyToken(token);
+  if (jwtClaims && jwtClaims.role) {
+    return {
+      user: {
+        id: jwtClaims.sub || jwtClaims.id || `usr-${jwtClaims.role}`,
+        name: jwtClaims.name || `${jwtClaims.role.toUpperCase()} Operator`,
+        email: jwtClaims.email || '',
+        phone: jwtClaims.phone || '',
+        role: jwtClaims.role,
+        teamId: jwtClaims.teamId || resolvedTeamId,
+        exp: jwtClaims.exp
+      }
+    };
+  }
+
+  const role = verifyEnvBearerToken(token);
+  if (!role) return null;
   return {
     user: {
       id: `env-${role}`,
       name: `${role.toUpperCase()} Operator`,
       role,
-      teamId: (typeof headerTeamId === 'string' && headerTeamId.trim()) || (queryTeamId && queryTeamId.trim()) || null
+      teamId: resolvedTeamId
     }
   };
+}
+
+async function hydrateCitizenPhone(user) {
+  if (!user || user.role !== 'citizen' || user.phone || !user.id) return user;
+  try {
+    const dbUser = (await db.getUserById(user.id))
+      || (user.email ? await db.getUserByIdentifier(user.email) : null);
+    if (dbUser?.phone) {
+      return { ...user, phone: dbUser.phone };
+    }
+  } catch (_) {}
+  return user;
 }
 
 // ------------------------------------------------------------------ routing
@@ -161,7 +195,8 @@ route('GET', '/api/stream', ANY, async ({ req, res, user }) => {
     'Connection': 'keep-alive',
     'X-Accel-Buffering': 'no'
   });
-  const viewer = { id: user.id, role: user.role, name: user.name, teamId: user.teamId || null };
+  const hydrated = await hydrateCitizenPhone(user);
+  const viewer = { id: hydrated.id, role: hydrated.role, name: hydrated.name, phone: hydrated.phone || '', teamId: hydrated.teamId || null };
   res.write(`data: ${JSON.stringify({ type: 'connected', time: Date.now(), service: 'ResQCore Real-Time Event Stream', role: user.role, userId: user.id })}\n\n`);
   const client = eventBus.addSSEClient(res, viewer);
 
@@ -171,8 +206,29 @@ route('GET', '/api/stream', ANY, async ({ req, res, user }) => {
   return HANDLED;
 });
 
-// ---- OS engine state
-route('GET', '/api/os/state', null, async () => ({ success: true, state: osEngine.getState() }));
+// ---- OS engine state & algorithms (Section 9)
+route('GET', '/api/os/state', null, async () => ({ success: true, state: getOsLiveSnapshot() }));
+route('GET', '/api/os-live', null, async () => actions.getOsLive());
+route('POST', '/api/os-live/resources', COMMAND, async ({ body }) =>
+  await actions.updateOsResourceTotals(body)
+);
+route('GET', '/api/os-algo/schedulers', null, async ({ query }) =>
+  await actions.getSchedulerComparison({
+    source: query.get('source') || 'live',
+    quantum: query.get('quantum')
+  })
+);
+route('POST', '/api/os-algo/schedulers', null, async ({ body }) =>
+  actions.runCustomSchedulerComparison(body)
+);
+route('GET', '/api/os-algo/deadlock', null, async () => actions.getDeadlockAnalysis());
+route('GET', '/api/os-algo/semaphore-demo', null, async ({ query }) =>
+  actions.getSemaphoreDemo({
+    capacity: query.get('capacity'),
+    items: query.get('items'),
+    consumeEvery: query.get('consumeEvery')
+  })
+);
 
 // ---- citizen
 route('POST', '/api/citizen/sos', ['citizen', 'command'], async ({ user, body }) => {
@@ -196,6 +252,16 @@ route('GET', '/api/citizen/my-requests', null, myRequests);
 route('GET', '/api/incidents', null, async ({ query }) => {
   const list = await actions.listIncidents({ status: query.get('status') });
   return { success: true, count: list.length, incidents: list };
+});
+route('GET', '/api/incidents/:id/suggest-team', null, async ({ params }) =>
+  await actions.suggestTeamsForIncident(params.id)
+);
+route('GET', '/api/incidents/:id/chat', ANY, async ({ user, params, query }) =>
+  ({ success: true, ...(await actions.listIncidentChat(user, params.id, { limit: query.get('limit'), since: query.get('since') })) })
+);
+route('POST', '/api/incidents/:id/chat', ANY, async ({ user, params, body }) => {
+  const { channel, incidentId, message, duplicate } = await actions.sendIncidentChat(user, params.id, body);
+  return reply(duplicate ? 200 : 201, { success: true, channel, incidentId, message, duplicate });
 });
 route('GET', '/api/incidents/:id', null, async ({ params }) => ({
   success: true,
@@ -224,6 +290,9 @@ route('POST', '/api/command/broadcast', COMMAND, async ({ user, body }) =>
 
 // ---- teams / telemetry
 route('GET', '/api/teams', null, async () => ({ success: true, teams: await actions.listTeams() }));
+route('POST', '/api/teams', STAFF, async ({ user, body }) =>
+  reply(201, { success: true, team: await actions.createTeam(user, body) })
+);
 route('POST', '/api/teams/telemetry', RESCUE, async ({ user, body }) => ({
   success: true,
   team: await actions.postTelemetry(user, body)
@@ -318,11 +387,23 @@ route('PUT', '/api/volunteers/:id', ANY, async ({ user, params, body }) => ({
   success: true,
   volunteer: await actions.setVolunteerStatus(user, params.id, body)
 }));
+route('POST', '/api/volunteers/:id/assign', STAFF, async ({ user, params, body }) => ({
+  success: true,
+  volunteer: await actions.assignVolunteer(user, params.id, body)
+}));
+route('POST', '/api/volunteers/:id/unassign', STAFF, async ({ user, params, body }) => ({
+  success: true,
+  volunteer: await actions.unassignVolunteer(user, params.id, body)
+}));
 
-// ---- diagnostics
+// ---- diagnostics & operational intelligence
 route('GET', '/api/database/stats', null, async () => ({
   success: true,
   database: await db.getStats()
+}));
+route('GET', '/api/reports/intelligence', null, async () => ({
+  success: true,
+  intelligence: await actions.getOperationalIntelligence()
 }));
 
 // ------------------------------------------------------------------ static hosting (../resqcore/dist)
@@ -457,9 +538,17 @@ const server = http.createServer(async (req, res) => {
 
 const wsServer = new SimpleWebSocketServer(server, {
   path: '/ws',
-  authenticate: (req, url) => {
+  authenticate: async (req, url) => {
     const auth = authenticate(req, url);
-    return auth ? { id: auth.user.id, role: auth.user.role, name: auth.user.name, teamId: auth.user.teamId } : null;
+    if (!auth) return null;
+    const hydrated = await hydrateCitizenPhone(auth.user);
+    return {
+      id: hydrated.id,
+      role: hydrated.role,
+      name: hydrated.name,
+      phone: hydrated.phone || '',
+      teamId: hydrated.teamId
+    };
   },
   isOriginAllowed: (origin, req) => isOriginAllowed(origin) || sameHostOrigin(origin, req)
 });
@@ -509,7 +598,8 @@ wsServer.onMessage(async (msg, client) => {
 // ------------------------------------------------------------------ lifecycle
 
 await db.init();
-osEngine.startAgingTimer((state) => eventBus.emitRealtime('os_state', state));
+await initLiveOsFromDb();
+startLiveAgingTimer(30_000);
 startFeeds();
 
 server.listen(PORT, '0.0.0.0', () => {
@@ -526,7 +616,7 @@ async function shutdown(signal) {
   shuttingDown = true;
   console.log(`[Lifecycle] ${signal} received, shutting down...`);
   stopFeeds();
-  osEngine.stopAgingTimer();
+  stopLiveAgingTimer();
   const force = setTimeout(() => process.exit(1), 5000);
   force.unref();
   server.close(async () => {

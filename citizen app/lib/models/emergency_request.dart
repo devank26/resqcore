@@ -104,8 +104,19 @@ class EmergencyRequest {
   final int photoCount;
   final String? photoAssetPath;
   final List<RequestedResource> requestedResources;
+  final String? assignedTeam;
+  final String? assignedTeamId;
   final DateTime createdAt;
   final bool isRecent;
+
+  bool get hasAssignedTeam {
+    final t = (assignedTeam ?? '').trim();
+    if (t.isNotEmpty && t.toLowerCase() != 'unassigned' && t.toLowerCase() != 'null') {
+      return true;
+    }
+    final tid = (assignedTeamId ?? '').trim();
+    return tid.isNotEmpty && tid.toLowerCase() != 'null';
+  }
 
   const EmergencyRequest({
     required this.id,
@@ -122,6 +133,8 @@ class EmergencyRequest {
     this.photoCount = 1,
     this.photoAssetPath,
     this.requestedResources = const [],
+    this.assignedTeam,
+    this.assignedTeamId,
     required this.createdAt,
     this.isRecent = true,
   });
@@ -141,6 +154,8 @@ class EmergencyRequest {
     int? photoCount,
     String? photoAssetPath,
     List<RequestedResource>? requestedResources,
+    String? assignedTeam,
+    String? assignedTeamId,
     DateTime? createdAt,
     bool? isRecent,
   }) {
@@ -159,8 +174,82 @@ class EmergencyRequest {
       photoCount: photoCount ?? this.photoCount,
       photoAssetPath: photoAssetPath ?? this.photoAssetPath,
       requestedResources: requestedResources ?? this.requestedResources,
+      assignedTeam: assignedTeam ?? this.assignedTeam,
+      assignedTeamId: assignedTeamId ?? this.assignedTeamId,
       createdAt: createdAt ?? this.createdAt,
       isRecent: isRecent ?? this.isRecent,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'type': type.name,
+        'status': status.name,
+        'timeLabel': timeLabel,
+        'location': location,
+        'fullAddress': fullAddress,
+        'dispatchUpdate': dispatchUpdate,
+        'description': description,
+        'contactNumber': contactNumber,
+        'photoCount': photoCount,
+        'photoAssetPath': photoAssetPath,
+        'requestedResources': requestedResources.map((r) => r.toJson()).toList(),
+        'assignedTeam': assignedTeam,
+        'assignedTeamId': assignedTeamId,
+        'createdAt': createdAt.toIso8601String(),
+        'isRecent': isRecent,
+      };
+
+  static IconData _iconFor(EmergencyType type, RequestStatus status) {
+    if (status == RequestStatus.resolved) return Icons.check_circle;
+    if (status == RequestStatus.assigned) return Icons.engineering;
+    if (status == RequestStatus.pending) return Icons.hourglass_top;
+    if (type == EmergencyType.flood) return Icons.directions_boat;
+    if (type == EmergencyType.fire) return Icons.local_fire_department;
+    if (type == EmergencyType.earthquake) return Icons.landslide;
+    return Icons.emergency;
+  }
+
+  factory EmergencyRequest.fromJson(Map<String, dynamic> json) {
+    final typeName = (json['type'] ?? 'other').toString();
+    final type = EmergencyType.values.firstWhere(
+      (e) => e.name == typeName,
+      orElse: () => EmergencyType.other,
+    );
+    final statusName = (json['status'] ?? 'pending').toString();
+    final status = RequestStatus.values.firstWhere(
+      (s) => s.name == statusName,
+      orElse: () => RequestStatus.pending,
+    );
+    final rawResources = json['requestedResources'];
+    final resources = rawResources is List
+        ? rawResources
+            .whereType<Map>()
+            .map((r) => RequestedResource.fromJson(Map<String, dynamic>.from(r)))
+            .toList()
+        : const <RequestedResource>[];
+    final createdAt = DateTime.tryParse((json['createdAt'] ?? '').toString()) ?? DateTime.now();
+
+    return EmergencyRequest(
+      id: (json['id'] ?? 'SOS-${createdAt.millisecondsSinceEpoch}').toString(),
+      title: (json['title'] ?? 'Emergency Request').toString(),
+      type: type,
+      status: status,
+      timeLabel: (json['timeLabel'] ?? 'Saved').toString(),
+      location: (json['location'] ?? '').toString(),
+      fullAddress: (json['fullAddress'] ?? '').toString(),
+      dispatchUpdate: (json['dispatchUpdate'] ?? '').toString(),
+      dispatchIcon: _iconFor(type, status),
+      description: (json['description'] ?? '').toString(),
+      contactNumber: (json['contactNumber'] ?? '').toString(),
+      photoCount: (json['photoCount'] as num?)?.toInt() ?? 0,
+      photoAssetPath: json['photoAssetPath']?.toString(),
+      requestedResources: resources,
+      assignedTeam: json['assignedTeam']?.toString(),
+      assignedTeamId: json['assignedTeamId']?.toString(),
+      createdAt: createdAt,
+      isRecent: json['isRecent'] == true,
     );
   }
 }

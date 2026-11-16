@@ -23,6 +23,30 @@ class Shelter {
 
   double get occupancyRate => (occupied / capacity).clamp(0.0, 1.0);
 
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'location': location,
+        'capacity': capacity,
+        'occupied': occupied,
+        'distance': distance,
+        'amenities': amenities,
+        'hasMedical': hasMedical,
+        'hasAirlift': hasAirlift,
+      };
+
+  factory Shelter.fromJson(Map<String, dynamic> s) => Shelter(
+        id: (s['id'] ?? '').toString(),
+        name: (s['name'] ?? 'Relief Shelter').toString(),
+        location: (s['sector'] ?? s['location'] ?? '').toString(),
+        capacity: (s['capacity'] as num?)?.toInt() ?? 100,
+        occupied: (s['occupied'] as num?)?.toInt() ?? 0,
+        distance: (s['distance'] ?? 'Active').toString(),
+        amenities: (s['amenities'] ?? 'Medical, Food, Water').toString(),
+        hasMedical: s['hasMedical'] == true || s['hasMedical'] == 1,
+        hasAirlift: s['hasAirlift'] == true || s['hasAirlift'] == 1,
+      );
+
   static List<Shelter> mockShelters() {
     return [
       const Shelter(
@@ -84,6 +108,32 @@ class Evacuee {
     required this.bloodGroup,
     required this.assignedShelter,
   });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'age': age,
+        'gender': gender,
+        'status': status,
+        'riskLevel': riskLevel,
+        'lastSeen': lastSeen,
+        'notes': notes,
+        'bloodGroup': bloodGroup,
+        'assignedShelter': assignedShelter,
+      };
+
+  factory Evacuee.fromJson(Map<String, dynamic> json) => Evacuee(
+        id: (json['id'] ?? '').toString(),
+        name: (json['name'] ?? '').toString(),
+        age: (json['age'] as num?)?.toInt() ?? 0,
+        gender: (json['gender'] ?? '').toString(),
+        status: (json['status'] ?? 'Missing').toString(),
+        riskLevel: (json['riskLevel'] ?? 'Moderate').toString(),
+        lastSeen: (json['lastSeen'] ?? '').toString(),
+        notes: (json['notes'] ?? '').toString(),
+        bloodGroup: (json['bloodGroup'] ?? 'N/A').toString(),
+        assignedShelter: (json['assignedShelter'] ?? '').toString(),
+      );
 
   static List<Evacuee> mockEvacuees() {
     return [

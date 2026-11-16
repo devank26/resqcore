@@ -2,6 +2,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'providers/rescue_provider.dart';
+import 'screens/main_shell.dart';
 import 'screens/welcome_screen.dart';
 import 'theme/app_colors.dart';
 import 'theme/app_theme.dart';
@@ -64,7 +65,15 @@ class ResQCoreApp extends StatelessWidget {
                 child: child ?? const SizedBox.shrink(),
               );
             },
-            home: const WelcomeScreen(),
+            home: !provider.isHydrated
+                ? const Scaffold(
+                    body: Center(
+                      child: CircularProgressIndicator(),
+                    ),
+                  )
+                : (provider.isLoggedIn
+                    ? const MainShell()
+                    : const WelcomeScreen()),
           );
         },
       ),

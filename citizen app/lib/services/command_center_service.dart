@@ -1,8 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'account_storage_service.dart';
+import 'platform_ws.dart';
 
 class CommandCenterService {
   static const String _envApiBaseUrl = String.fromEnvironment('API_BASE_URL');
@@ -11,13 +12,14 @@ class CommandCenterService {
   static String get baseUrl {
     final trimmed = _envApiBaseUrl.trim().replaceAll(RegExp(r'/+$'), '');
     if (trimmed.isNotEmpty) return trimmed;
+    if (kIsWeb) return 'http://localhost:5000';
     if (kDebugMode) return 'http://10.0.2.2:5000';
     return '';
   }
 
   static String _authToken = _envCitizenToken;
   static final Map<String, Timer> _activePollers = {};
-  static WebSocket? _liveSocket;
+  static PlatformWebSocket? _liveSocket;
   static Timer? _reconnectTimer;
   static Timer? _pollFallbackTimer;
   static bool _liveActive = false;
@@ -37,10 +39,31 @@ class CommandCenterService {
     _authToken = cleaned.isNotEmpty ? cleaned : _envCitizenToken;
   }
 
-  static void _applyAuth(HttpClientRequest request) {
-    if (_authToken.isNotEmpty) {
-      request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $_authToken');
+  /// Returns true when no token is held or an older generic 'usr-citizen' fallback JWT is stored.
+  static bool authTokenNeedsUpgrade() {
+    if (_authToken.trim().isEmpty) return true;
+    try {
+      final parts = _authToken.split('.');
+      if (parts.length != 3) return false;
+      final normalized = base64Url.normalize(parts[1]);
+      final decoded = jsonDecode(utf8.decode(base64Url.decode(normalized)));
+      if (decoded is Map<String, dynamic>) {
+        final sub = (decoded['sub'] ?? decoded['id'] ?? '').toString();
+        if (sub == 'usr-citizen') return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  static Map<String, String> _authHeaders({bool json = false}) {
+    final headers = <String, String>{};
+    if (json) {
+      headers['Content-Type'] = 'application/json';
     }
+    if (_authToken.isNotEmpty) {
+      headers['Authorization'] = 'Bearer $_authToken';
+    }
+    return headers;
   }
 
   static Map<String, dynamic> _tryDecodeMap(String raw) {
@@ -57,10 +80,9 @@ class CommandCenterService {
     final host = baseUrl;
     if (host.isEmpty) return false;
     try {
-      final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 3);
-      final request = await client.getUrl(Uri.parse('$host/api/health'));
-      final response = await request.close();
+      final response = await http
+          .get(Uri.parse('$host/api/health'))
+          .timeout(const Duration(seconds: 3));
       return response.statusCode == 200;
     } catch (_) {
       return false;
@@ -101,15 +123,14 @@ class CommandCenterService {
 
     for (final ep in endpoints) {
       try {
-        final client = HttpClient();
-        client.connectionTimeout = const Duration(seconds: 5);
-        final request = await client.postUrl(Uri.parse('$host$ep'));
-        request.headers.contentType = ContentType.json;
-        _applyAuth(request);
-        request.write(jsonEncode(payloadMap));
-        final response = await request.close();
-        final raw = await response.transform(utf8.decoder).join();
-        final data = _tryDecodeMap(raw);
+        final response = await http
+            .post(
+              Uri.parse('$host$ep'),
+              headers: _authHeaders(json: true),
+              body: jsonEncode(payloadMap),
+            )
+            .timeout(const Duration(seconds: 5));
+        final data = _tryDecodeMap(response.body);
 
         if (response.statusCode == 200 || response.statusCode == 201) {
           final tok = (data['token'] ?? '').toString().trim();
@@ -163,12 +184,6 @@ class CommandCenterService {
     }
 
     try {
-      final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 5);
-      final request = await client.postUrl(Uri.parse('$host/api/citizen/sos'));
-      request.headers.contentType = ContentType.json;
-      _applyAuth(request);
-
       final bodyMap = <String, dynamic>{
         'id': id,
         'title': title,
@@ -190,10 +205,14 @@ class CommandCenterService {
         bodyMap['resources'] = resources;
       }
 
-      request.write(jsonEncode(bodyMap));
-      final response = await request.close();
-      final responseBody = await response.transform(utf8.decoder).join();
-      final decoded = _tryDecodeMap(responseBody);
+      final response = await http
+          .post(
+            Uri.parse('$host/api/citizen/sos'),
+            headers: _authHeaders(json: true),
+            body: jsonEncode(bodyMap),
+          )
+          .timeout(const Duration(seconds: 5));
+      final decoded = _tryDecodeMap(response.body);
       if (response.statusCode == 200 || response.statusCode == 201) {
         return decoded;
       }
@@ -211,14 +230,11 @@ class CommandCenterService {
     final host = baseUrl;
     if (host.isEmpty) return [];
     try {
-      final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 4);
-      final request = await client.getUrl(Uri.parse('$host/api/resources'));
-      _applyAuth(request);
-      final response = await request.close();
+      final response = await http
+          .get(Uri.parse('$host/api/resources'), headers: _authHeaders())
+          .timeout(const Duration(seconds: 4));
       if (response.statusCode == 200) {
-        final responseBody = await response.transform(utf8.decoder).join();
-        final data = _tryDecodeMap(responseBody);
+        final data = _tryDecodeMap(response.body);
         final list = data['resources'] as List<dynamic>?;
         if (list != null) {
           return list
@@ -236,34 +252,99 @@ class CommandCenterService {
     final host = baseUrl;
     if (host.isEmpty) return null;
     try {
-      final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 3);
-      final request = await client.getUrl(Uri.parse('$host/api/citizen/status/$requestId'));
-      _applyAuth(request);
-      final response = await request.close();
+      final response = await http
+          .get(Uri.parse('$host/api/citizen/status/$requestId'), headers: _authHeaders())
+          .timeout(const Duration(seconds: 3));
       if (response.statusCode == 200) {
-        final responseBody = await response.transform(utf8.decoder).join();
-        return jsonDecode(responseBody) as Map<String, dynamic>;
+        return jsonDecode(response.body) as Map<String, dynamic>;
       }
     } catch (_) {}
     return null;
   }
 
+  /// Fetch chat thread between the citizen and the rescue team assigned to [incidentId]
+  static Future<Map<String, dynamic>> fetchIncidentChat(String incidentId) async {
+    final host = baseUrl;
+    if (host.isEmpty) {
+      return const {'success': false, 'error': 'Command Center host not configured'};
+    }
+    try {
+      final response = await http
+          .get(
+            Uri.parse('$host/api/incidents/${Uri.encodeComponent(incidentId)}/chat'),
+            headers: _authHeaders(),
+          )
+          .timeout(const Duration(seconds: 4));
+      final data = _tryDecodeMap(response.body);
+      if (response.statusCode == 200) {
+        return data;
+      }
+      return {
+        'success': false,
+        'status': response.statusCode,
+        'error': (data['error'] ?? 'Failed to load chat (${response.statusCode})').toString(),
+      };
+    } catch (e) {
+      return {'success': false, 'networkError': true, 'error': e.toString()};
+    }
+  }
+
+  /// Send a chat message from the citizen to the rescue team assigned to [incidentId]
+  static Future<Map<String, dynamic>> sendIncidentChat({
+    required String incidentId,
+    required String text,
+    String? id,
+    String? sender,
+    String? locationTag,
+  }) async {
+    final host = baseUrl;
+    if (host.isEmpty) {
+      return const {'success': false, 'error': 'Command Center host not configured'};
+    }
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$host/api/incidents/${Uri.encodeComponent(incidentId)}/chat'),
+            headers: _authHeaders(json: true),
+            body: jsonEncode({
+              if (id != null && id.isNotEmpty) 'id': id,
+              'text': text,
+              if (sender != null && sender.isNotEmpty) 'sender': sender,
+              if (locationTag != null && locationTag.isNotEmpty) 'locationTag': locationTag,
+            }),
+          )
+          .timeout(const Duration(seconds: 5));
+      final data = _tryDecodeMap(response.body);
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return data;
+      }
+      return {
+        'success': false,
+        'status': response.statusCode,
+        'error': (data['error'] ?? 'Failed to send message (${response.statusCode})').toString(),
+      };
+    } catch (e) {
+      return {'success': false, 'networkError': true, 'error': e.toString()};
+    }
+  }
+
+  static bool lastAlertsFetchSucceeded = false;
+  static bool lastRequestsFetchSucceeded = false;
+
   /// Fetch active alerts & advisories issued by Command Center
   static Future<List<Map<String, dynamic>>> fetchAlerts() async {
+    lastAlertsFetchSucceeded = false;
     final host = baseUrl;
     if (host.isEmpty) return [];
     try {
-      final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 3);
-      final request = await client.getUrl(Uri.parse('$host/api/alerts'));
-      _applyAuth(request);
-      final response = await request.close();
+      final response = await http
+          .get(Uri.parse('$host/api/alerts'), headers: _authHeaders())
+          .timeout(const Duration(seconds: 3));
       if (response.statusCode == 200) {
-        final responseBody = await response.transform(utf8.decoder).join();
-        final data = jsonDecode(responseBody) as Map<String, dynamic>;
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
         final list = data['alerts'] as List<dynamic>?;
         if (list != null) {
+          lastAlertsFetchSucceeded = true;
           return list.cast<Map<String, dynamic>>();
         }
       }
@@ -273,22 +354,21 @@ class CommandCenterService {
 
   /// Fetch all requests for a given citizen phone/user
   static Future<List<Map<String, dynamic>>> fetchMyRequests(String phoneNumber) async {
+    lastRequestsFetchSucceeded = false;
     final host = baseUrl;
     if (host.isEmpty) return [];
     try {
-      final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 4);
       final query = phoneNumber.trim().isNotEmpty
           ? '?phone=${Uri.encodeComponent(phoneNumber.trim())}'
           : '';
-      final request = await client.getUrl(Uri.parse('$host/api/citizen/my-requests$query'));
-      _applyAuth(request);
-      final response = await request.close();
+      final response = await http
+          .get(Uri.parse('$host/api/citizen/my-requests$query'), headers: _authHeaders())
+          .timeout(const Duration(seconds: 4));
       if (response.statusCode == 200) {
-        final responseBody = await response.transform(utf8.decoder).join();
-        final data = jsonDecode(responseBody) as Map<String, dynamic>;
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
         final list = data['requests'] as List<dynamic>?;
         if (list != null) {
+          lastRequestsFetchSucceeded = true;
           return list.cast<Map<String, dynamic>>();
         }
       }
@@ -319,20 +399,23 @@ class CommandCenterService {
           ? host.replaceFirst('https://', 'wss://')
           : host.replaceFirst('http://', 'ws://');
       final tokenQ = _authToken.isNotEmpty ? '?token=${Uri.encodeComponent(_authToken)}' : '';
-      final headers = <String, dynamic>{};
+      final headers = <String, String>{};
       if (_authToken.isNotEmpty) {
-        headers[HttpHeaders.authorizationHeader] = 'Bearer $_authToken';
+        headers['Authorization'] = 'Bearer $_authToken';
       }
 
-      final ws = await WebSocket.connect('$wsBase/ws$tokenQ', headers: headers)
-          .timeout(const Duration(seconds: 4));
+      final ws = await connectPlatformWebSocket(
+        '$wsBase/ws$tokenQ',
+        headers: headers,
+        timeout: const Duration(seconds: 4),
+      );
       _liveSocket = ws;
 
       // Cancel fallback polling once WebSocket is connected
       _pollFallbackTimer?.cancel();
       _pollFallbackTimer = null;
 
-      ws.listen(
+      ws.stream.listen(
         (raw) {
           try {
             final decoded = jsonDecode(raw as String);
@@ -400,7 +483,7 @@ class CommandCenterService {
     stopTrackingRequest(requestId);
 
     _activePollers[requestId] = Timer.periodic(const Duration(seconds: 5), (timer) async {
-      if (_liveSocket != null && _liveSocket!.readyState == WebSocket.open) {
+      if (_liveSocket != null && _liveSocket!.isOpen) {
         return;
       }
       final res = await getRequestStatus(requestId);

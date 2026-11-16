@@ -3,6 +3,8 @@ import 'package:provider/provider.dart';
 import '../providers/rescue_provider.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text_styles.dart';
+import 'dialogs/request_detail_dialog.dart';
+import 'incident_chat_screen.dart';
 
 class InboxScreen extends StatelessWidget {
   const InboxScreen({super.key});
@@ -88,20 +90,45 @@ class InboxScreen extends StatelessWidget {
               )
             else ...[
               ...provider.allRequests.map(
-                (req) => Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: _buildNotificationItem(
-                    isUnread: true,
-                    icon: req.dispatchIcon,
-                    iconBg: AppColors.primaryContainer.withValues(alpha: 0.2),
-                    iconColor: AppColors.primary,
-                    title: '${req.id} · ${req.title}',
-                    body: req.requestedResources.isNotEmpty
-                        ? '${req.dispatchUpdate}\nRequested: ${req.requestedResources.map((r) => '${r.name} x${r.quantity}').join(', ')}'
-                        : req.dispatchUpdate,
-                    time: req.timeLabel,
-                  ),
-                ),
+                (req) {
+                  final lastChat = provider.latestChatMessageForIncident(req.id);
+                  final chatHint = req.hasAssignedTeam
+                      ? (lastChat != null
+                          ? 'Team chat · ${lastChat['sender'] ?? 'Team'}: ${lastChat['text'] ?? ''}'
+                          : 'Tap to chat with ${req.assignedTeam ?? "Assigned Team"}')
+                      : null;
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(14),
+                      onTap: () {
+                        if (req.hasAssignedTeam) {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => CitizenTeamChatScreen(initialRequest: req),
+                            ),
+                          );
+                        } else {
+                          RequestDetailDialog.show(context, req);
+                        }
+                      },
+                      child: _buildNotificationItem(
+                        isUnread: true,
+                        icon: req.hasAssignedTeam ? Icons.forum_outlined : req.dispatchIcon,
+                        iconBg: req.hasAssignedTeam
+                            ? AppColors.successContainer.withValues(alpha: 0.45)
+                            : AppColors.primaryContainer.withValues(alpha: 0.2),
+                        iconColor: req.hasAssignedTeam ? AppColors.successLight : AppColors.primary,
+                        title: '${req.id} · ${req.title}',
+                        body: req.requestedResources.isNotEmpty
+                            ? '${req.dispatchUpdate}\nRequested: ${req.requestedResources.map((r) => '${r.name} x${r.quantity}').join(', ')}'
+                            : req.dispatchUpdate,
+                        time: req.timeLabel,
+                        actionLabel: chatHint,
+                      ),
+                    ),
+                  );
+                },
               ),
               ...provider.liveAlerts.map(
                 (alert) => Padding(
@@ -186,6 +213,7 @@ class InboxScreen extends StatelessWidget {
     required String body,
     required String time,
     String? imageThumbnail,
+    String? actionLabel,
   }) {
     return Container(
       padding: const EdgeInsets.all(14),
@@ -258,6 +286,27 @@ class InboxScreen extends StatelessWidget {
                     fontSize: 11,
                   ),
                 ),
+                if (actionLabel != null && actionLabel.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      const Icon(Icons.chat_bubble_outline, size: 13, color: AppColors.successLight),
+                      const SizedBox(width: 5),
+                      Expanded(
+                        child: Text(
+                          actionLabel,
+                          style: AppTextStyles.labelSm.copyWith(
+                            color: AppColors.successLight,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 11,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ],
             ),
           ),

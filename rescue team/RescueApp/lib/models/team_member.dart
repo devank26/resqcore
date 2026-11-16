@@ -22,6 +22,32 @@ class TeamMember {
     required this.avatarUrl,
     required this.bloodGroup,
   });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'role': role,
+        'specialty': specialty,
+        'batteryLevel': batteryLevel,
+        'status': status,
+        'distance': distance,
+        'gpsCoords': gpsCoords,
+        'avatarUrl': avatarUrl,
+        'bloodGroup': bloodGroup,
+      };
+
+  factory TeamMember.fromJson(Map<String, dynamic> json) => TeamMember(
+        id: (json['id'] ?? '').toString(),
+        name: (json['name'] ?? 'Operative').toString(),
+        role: (json['role'] ?? 'Field Operative').toString(),
+        specialty: (json['specialty'] ?? 'SAR').toString(),
+        batteryLevel: (json['batteryLevel'] as num?)?.toInt() ?? 100,
+        status: (json['status'] ?? 'Available').toString(),
+        distance: (json['distance'] ?? 'Live').toString(),
+        gpsCoords: (json['gpsCoords'] ?? 'Awaiting GPS').toString(),
+        avatarUrl: (json['avatarUrl'] ?? '').toString(),
+        bloodGroup: (json['bloodGroup'] ?? 'N/A').toString(),
+      );
 }
 
 class RescueTeam {
@@ -56,6 +82,142 @@ class RescueTeam {
     required this.status,
     required this.members,
   });
+
+  RescueTeam copyWith({
+    String? id,
+    String? name,
+    String? sector,
+    String? callsign,
+    String? frequency,
+    String? commanderName,
+    String? commanderPhone,
+    String? commanderExperience,
+    String? commanderBloodGroup,
+    String? commanderAvatar,
+    int? syncedCount,
+    int? totalCount,
+    String? status,
+    List<TeamMember>? members,
+  }) {
+    return RescueTeam(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      sector: sector ?? this.sector,
+      callsign: callsign ?? this.callsign,
+      frequency: frequency ?? this.frequency,
+      commanderName: commanderName ?? this.commanderName,
+      commanderPhone: commanderPhone ?? this.commanderPhone,
+      commanderExperience: commanderExperience ?? this.commanderExperience,
+      commanderBloodGroup: commanderBloodGroup ?? this.commanderBloodGroup,
+      commanderAvatar: commanderAvatar ?? this.commanderAvatar,
+      syncedCount: syncedCount ?? this.syncedCount,
+      totalCount: totalCount ?? this.totalCount,
+      status: status ?? this.status,
+      members: members ?? this.members,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'sector': sector,
+        'callsign': callsign,
+        'frequency': frequency,
+        'commanderName': commanderName,
+        'commanderPhone': commanderPhone,
+        'commanderExperience': commanderExperience,
+        'commanderBloodGroup': commanderBloodGroup,
+        'commanderAvatar': commanderAvatar,
+        'syncedCount': syncedCount,
+        'totalCount': totalCount,
+        'status': status,
+        'members': members.map((m) => m.toJson()).toList(),
+      };
+
+  /// Parses either a locally cached [RescueTeam] payload or a backend `/api/teams` payload.
+  factory RescueTeam.fromJson(
+    Map<String, dynamic> t, {
+    String fallbackCommander = 'Field Lead',
+    String fallbackPhone = '',
+  }) {
+    final id = (t['id'] ?? '').toString();
+    final name = (t['name'] ?? 'Rescue Unit').toString();
+    final coords = t['coordinates'] is Map
+        ? Map<String, dynamic>.from(t['coordinates'] as Map)
+        : null;
+    final lat = (coords?['lat'] ?? coords?['latitude'] as num?)?.toDouble();
+    final lng = (coords?['lng'] ?? coords?['longitude'] as num?)?.toDouble();
+    final gpsStr = (lat != null && lng != null)
+        ? '${lat.toStringAsFixed(4)}° N, ${lng.toStringAsFixed(4)}° E'
+        : 'Awaiting GPS';
+
+    final commander = (t['commanderName'] ?? t['lead'] ?? '')
+            .toString()
+            .trim()
+            .isNotEmpty
+        ? (t['commanderName'] ?? t['lead']).toString()
+        : (fallbackCommander.isNotEmpty ? fallbackCommander : name);
+    final phone = (t['commanderPhone'] ?? t['phone'] ?? '')
+            .toString()
+            .trim()
+            .isNotEmpty
+        ? (t['commanderPhone'] ?? t['phone']).toString()
+        : fallbackPhone;
+    final total = (t['totalCount'] as num?)?.toInt() ??
+        (t['responders'] as num?)?.toInt() ??
+        (t['personnel'] as num?)?.toInt() ??
+        4;
+    final synced = (t['syncedCount'] as num?)?.toInt() ?? total;
+    final specialization = (t['specialization'] ?? t['type'] ?? 'SAR').toString();
+    final sector = (t['sector'] ?? t['sectorId'] ?? specialization).toString();
+    final status = (t['status'] ?? 'Available').toString();
+    final rawCallsign = (t['callsign'] ?? '').toString().trim();
+    final callsign = rawCallsign.isNotEmpty
+        ? rawCallsign
+        : (id.isNotEmpty ? id : name.toUpperCase());
+
+    final rawMembers = t['members'];
+    final List<TeamMember> parsedMembers;
+    if (rawMembers is List && rawMembers.isNotEmpty) {
+      parsedMembers = rawMembers
+          .whereType<Map>()
+          .map((m) => TeamMember.fromJson(Map<String, dynamic>.from(m)))
+          .toList();
+    } else {
+      parsedMembers = [
+        TeamMember(
+          id: '$id-lead',
+          name: commander,
+          role: specialization,
+          specialty: specialization,
+          batteryLevel: (t['battery'] as num?)?.toInt() ?? 100,
+          status: status,
+          distance: 'Live',
+          gpsCoords: gpsStr,
+          avatarUrl: '',
+          bloodGroup: 'N/A',
+        ),
+      ];
+    }
+
+    return RescueTeam(
+      id: id,
+      name: name,
+      sector: sector.isNotEmpty ? sector : 'Field Sector',
+      callsign: callsign,
+      frequency: (t['frequency'] ?? 'Ch 4A (156.8MHz)').toString(),
+      commanderName: commander,
+      commanderPhone: phone,
+      commanderExperience:
+          (t['commanderExperience'] ?? 'Active Field Unit').toString(),
+      commanderBloodGroup: (t['commanderBloodGroup'] ?? 'N/A').toString(),
+      commanderAvatar: (t['commanderAvatar'] ?? '').toString(),
+      syncedCount: synced,
+      totalCount: total,
+      status: status,
+      members: parsedMembers,
+    );
+  }
 
   static List<RescueTeam> mockTeams() {
     return [

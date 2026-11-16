@@ -1,23 +1,50 @@
 import { EventEmitter } from 'events';
 
+export function normalizePhoneDigits(phone) {
+  return String(phone || '').replace(/\D/g, '');
+}
+
+export function phonesMatch(a, b) {
+  const da = normalizePhoneDigits(a);
+  const db = normalizePhoneDigits(b);
+  if (!da || !db) return false;
+  return da === db || (da.length >= 6 && db.length >= 6 && (da.includes(db) || db.includes(da)));
+}
+
+function sanitizeChatEventPayload(data) {
+  if (!data || typeof data !== 'object') return data;
+  const { _assignedTeamId, _citizenUserId, _contactNumber, ...clean } = data;
+  return clean;
+}
+
 /**
  * Decides what (if anything) a given viewer may see of a realtime event.
- * viewer = { id, role, teamId }. Returns the (possibly reduced) payload or null to drop the event.
+ * viewer = { id, role, teamId, phone }. Returns the (possibly reduced) payload or null to drop the event.
  *
  *  - command : everything
- *  - rescue  : everything except citizen-only broadcasts and other teams' private chat channels (team-<id>)
- *  - citizen : only events about their OWN incidents, plus broadcasts addressed to citizens/all
+ *  - rescue  : everything except citizen-only broadcasts, other teams' private chat channels (team-<id>),
+ *              and incident-<id> chats not assigned to this team
+ *  - citizen : only events about their OWN incidents (including incident-<id> chat),
+ *              plus broadcasts addressed to citizens/all
  */
 export function projectForViewer(viewer, eventType, data) {
   if (!viewer) return null;
 
-  if (viewer.role === 'command') return data;
+  if (viewer.role === 'command') {
+    return eventType === 'new_chat_message' ? sanitizeChatEventPayload(data) : data;
+  }
 
   if (viewer.role === 'rescue') {
     if (eventType === 'emergency_broadcast' && data?.alert?.audience === 'citizens') return null;
     if (eventType === 'new_chat_message') {
       const channel = data?.channel || '';
       if (channel.startsWith('team-') && channel !== `team-${viewer.teamId}`) return null;
+      if (channel.startsWith('incident-')) {
+        if (!viewer.teamId || !data?._assignedTeamId || data._assignedTeamId !== viewer.teamId) {
+          return null;
+        }
+      }
+      return sanitizeChatEventPayload(data);
     }
     return data;
   }
@@ -26,6 +53,14 @@ export function projectForViewer(viewer, eventType, data) {
     if (eventType === 'emergency_broadcast' || eventType === 'alert_created') {
       const audience = data?.alert?.audience || 'all';
       return audience === 'all' || audience === 'citizens' ? data : null;
+    }
+    if (eventType === 'new_chat_message') {
+      const channel = data?.channel || '';
+      if (!channel.startsWith('incident-')) return null;
+      const ownerMatch = Boolean(data?._citizenUserId && data._citizenUserId === viewer.id);
+      const phoneMatch = Boolean(viewer.phone && data?._contactNumber && phonesMatch(data._contactNumber, viewer.phone));
+      if (!ownerMatch && !phoneMatch) return null;
+      return sanitizeChatEventPayload(data);
     }
     const citizenEvents = ['new_citizen_sos', 'incident_assigned', 'incident_verified', 'incident_status_changed'];
     if (!citizenEvents.includes(eventType)) return null;
@@ -102,7 +137,7 @@ class ResQCoreEventBus extends EventEmitter {
       for (const client of this.wsServer.clients) {
         const view = projectForViewer(client.viewer, eventType, data);
         if (view === null) continue;
-        this.wsServer.sendToClient(client, { event: eventType, data: view, timestamp: new Date().toISOString() });
+        this.wsServer.sendToClient(client, { type: eventType, event: eventType, data: view, timestamp: new Date().toISOString() });
         ws++;
       }
     }

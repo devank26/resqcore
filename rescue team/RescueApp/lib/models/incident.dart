@@ -204,6 +204,32 @@ class Incident {
     );
   }
 
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'location': location,
+        'timestamp': timestamp,
+        'severity': severity,
+        'status': (backendStatus != null && backendStatus!.isNotEmpty)
+            ? backendStatus
+            : status,
+        'teamAssigned': teamAssigned,
+        if (assignedTeamId != null) 'assignedTeamId': assignedTeamId,
+        'eta': eta,
+        'affected': affectedCount,
+        'coordinates': (lat != null && lng != null)
+            ? {'lat': lat, 'lng': lng, 'latitude': lat, 'longitude': lng}
+            : coordinates,
+        'description': description,
+        'substatus': substatus,
+        if (citizenName != null) 'citizenName': citizenName,
+        if (contactNumber != null) 'contactNumber': contactNumber,
+        if (fieldReport != null) 'fieldReport': fieldReport,
+        'requestedResources': requestedResources,
+        'isCitizenSOS': isCitizenSos,
+        if (photoAssetPath != null) 'photoAssetPath': photoAssetPath,
+      };
+
   static List<Incident> mockIncidents() {
     return [
       const Incident(

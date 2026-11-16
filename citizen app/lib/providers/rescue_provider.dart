@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import '../models/emergency_type.dart';
@@ -12,7 +13,7 @@ import '../services/account_storage_service.dart';
 
 class RescueProvider extends ChangeNotifier {
   RescueProvider() {
-    CommandCenterService.restoreSession();
+    restorePersistedState();
     initLocationTracking();
   }
 
@@ -85,11 +86,169 @@ class RescueProvider extends ChangeNotifier {
   void toggleTheme() {
     _isDarkMode = !_isDarkMode;
     notifyListeners();
+    _schedulePersist();
   }
 
   void setThemeMode(bool isDark) {
     _isDarkMode = isDark;
     notifyListeners();
+    _schedulePersist();
+  }
+
+  bool _isHydrated = false;
+  bool get isHydrated => _isHydrated;
+  Timer? _persistTimer;
+
+  @override
+  void dispose() {
+    _persistTimer?.cancel();
+    super.dispose();
+  }
+
+  void _schedulePersist() {
+    _persistTimer?.cancel();
+    _persistTimer = Timer(const Duration(milliseconds: 350), _persistNow);
+  }
+
+  Future<void> _persistNow() async {
+    _persistTimer?.cancel();
+    await AccountStorageService.saveSessionState({
+      'isLoggedIn': _isLoggedIn,
+      'isDemoMode': _isDemoMode,
+      'isDarkMode': _isDarkMode,
+      'authMethod': _authMethod,
+      'phoneNumber': _phoneNumber,
+      'email': _email,
+      'activeNavIndex': _activeNavIndex,
+      'requestsFilterTab': _requestsFilterTab,
+      'currentLocationName': _currentLocationName,
+      'currentLatitude': _currentLatitude,
+      'currentLongitude': _currentLongitude,
+      'currentUser': _currentUser.toJson(),
+      'requests': _requests.map((r) => r.toJson()).toList(),
+      'liveAlerts': _liveAlerts,
+      'availableResources': _availableResources,
+      'draftType': _draftType.name,
+      'draftAddress': _draftAddress,
+      'draftCity': _draftCity,
+      'draftLatitude': _draftLatitude,
+      'draftLongitude': _draftLongitude,
+      'draftDescription': _draftDescription,
+      'draftContact': _draftContact,
+      'draftConsent': _draftConsent,
+      'draftPhotoAsset': _draftPhotoAsset,
+      'draftPhotoName': _draftPhotoName,
+      'draftResources': _draftResources,
+      'incidentChats': _incidentChats,
+    });
+  }
+
+  Future<void> restorePersistedState() async {
+    await CommandCenterService.restoreSession();
+    try {
+      final saved = await AccountStorageService.loadSessionState();
+      if (saved != null) {
+        _isDarkMode = saved['isDarkMode'] != false;
+        _authMethod = (saved['authMethod'] ?? 'phone').toString();
+        _phoneNumber = (saved['phoneNumber'] ?? '').toString();
+        _email = (saved['email'] ?? '').toString();
+        final savedNav = (saved['activeNavIndex'] as num?)?.toInt() ?? 0;
+        _activeNavIndex = (savedNav >= 0 && savedNav <= 3) ? savedNav : 0;
+        final savedFilter = (saved['requestsFilterTab'] as num?)?.toInt() ?? 0;
+        _requestsFilterTab = (savedFilter == 1) ? 1 : 0;
+
+        final savedLoc = (saved['currentLocationName'] ?? '').toString();
+        if (savedLoc.isNotEmpty) _currentLocationName = savedLoc;
+        _currentLatitude = (saved['currentLatitude'] as num?)?.toDouble();
+        _currentLongitude = (saved['currentLongitude'] as num?)?.toDouble();
+
+        if (saved['currentUser'] is Map) {
+          _currentUser = UserProfile.fromJson(
+            Map<String, dynamic>.from(saved['currentUser'] as Map),
+          );
+        }
+
+        final rawReqs = saved['requests'];
+        if (rawReqs is List) {
+          _requests
+            ..clear()
+            ..addAll(
+              rawReqs
+                  .whereType<Map>()
+                  .map((r) => EmergencyRequest.fromJson(Map<String, dynamic>.from(r))),
+            );
+          _lastSubmittedRequest = _requests.isNotEmpty ? _requests.first : null;
+        }
+
+        final rawAlerts = saved['liveAlerts'];
+        if (rawAlerts is List) {
+          _liveAlerts = rawAlerts
+              .whereType<Map>()
+              .map((a) => Map<String, dynamic>.from(a))
+              .toList();
+        }
+
+        final rawResources = saved['availableResources'];
+        if (rawResources is List) {
+          _availableResources = rawResources
+              .whereType<Map>()
+              .map((r) => Map<String, dynamic>.from(r))
+              .toList();
+        }
+
+        final rawChats = saved['incidentChats'];
+        if (rawChats is Map) {
+          _incidentChats.clear();
+          rawChats.forEach((k, v) {
+            if (v is List) {
+              _incidentChats[k.toString()] = v
+                  .whereType<Map>()
+                  .map((m) => Map<String, dynamic>.from(m))
+                  .toList();
+            }
+          });
+        }
+
+        final draftTypeName = (saved['draftType'] ?? 'flood').toString();
+        _draftType = EmergencyType.values.firstWhere(
+          (e) => e.name == draftTypeName,
+          orElse: () => EmergencyType.flood,
+        );
+        _draftAddress = (saved['draftAddress'] ?? '').toString();
+        _draftCity = (saved['draftCity'] ?? '').toString();
+        _draftLatitude = (saved['draftLatitude'] as num?)?.toDouble() ?? _currentLatitude;
+        _draftLongitude = (saved['draftLongitude'] as num?)?.toDouble() ?? _currentLongitude;
+        _draftDescription = (saved['draftDescription'] ?? '').toString();
+        _draftContact = (saved['draftContact'] ?? '').toString();
+        _draftConsent = saved['draftConsent'] != false;
+        final draftPhoto = (saved['draftPhotoAsset'] ?? '').toString();
+        if (draftPhoto.isNotEmpty) _draftPhotoAsset = draftPhoto;
+        final draftPhotoName = (saved['draftPhotoName'] ?? '').toString();
+        if (draftPhotoName.isNotEmpty) _draftPhotoName = draftPhotoName;
+
+        final rawDraftRes = saved['draftResources'];
+        if (rawDraftRes is Map) {
+          _draftResources.clear();
+          rawDraftRes.forEach((k, v) {
+            final qty = int.tryParse(v.toString()) ?? 0;
+            if (qty > 0) _draftResources[k.toString()] = qty;
+          });
+        }
+
+        _isDemoMode = saved['isDemoMode'] == true;
+        _isLoggedIn = saved['isLoggedIn'] == true;
+        if (_isLoggedIn) {
+          _hasOtpError = false;
+        }
+      }
+    } catch (_) {}
+
+    _isHydrated = true;
+    notifyListeners();
+
+    if (_isLoggedIn && !_isDemoMode) {
+      _onLiveAuthenticated();
+    }
   }
 
   // Demo mode state
@@ -146,6 +305,7 @@ class RescueProvider extends ChangeNotifier {
   bool _loadingResources = false;
   String? _resourcesError;
   final Map<String, int> _draftResources = {};
+  final Map<String, List<Map<String, dynamic>>> _incidentChats = {};
 
   // Requests Tab Filter (0: Recent, 1: All requests)
   int _requestsFilterTab = 0;
@@ -407,6 +567,8 @@ class RescueProvider extends ChangeNotifier {
       contactNumber: '+91 98470 21836',
       photoCount: 1,
       photoAssetPath: 'assets/images/scenarios/flood_river_boat.png',
+      assignedTeam: 'Bravo 02',
+      assignedTeamId: 'demo-bravo-02',
       createdAt: DateTime(2026, 10, 10, 9, 20),
       isRecent: true,
     ),
@@ -443,6 +605,8 @@ class RescueProvider extends ChangeNotifier {
       contactNumber: '+91 98470 21836',
       photoCount: 1,
       photoAssetPath: 'assets/images/scenarios/flood_response_street.png',
+      assignedTeam: 'Delta 04',
+      assignedTeamId: 'demo-delta-04',
       createdAt: DateTime(2026, 10, 10, 8, 40),
       isRecent: true,
     ),
@@ -576,6 +740,7 @@ class RescueProvider extends ChangeNotifier {
     _savedAccounts[profile.phoneNumber] = profile;
     _savedAccounts[profile.email] = profile;
     notifyListeners();
+    _persistNow();
   }
 
   void setOtpDigit(int index, String digit) {
@@ -603,6 +768,22 @@ class RescueProvider extends ChangeNotifier {
     _requests
       ..clear()
       ..addAll(_demoRequests);
+    _incidentChats
+      ..clear()
+      ..['RQ-261010-0842'] = [
+        {
+          'id': 'demo-msg-bravo-1',
+          'channel': 'incident-RQ-261010-0842',
+          'sender': 'Bravo 02',
+          'senderRole': 'rescue',
+          'role': 'Bravo 02 · Marine Boat Unit',
+          'initials': 'B2',
+          'time': '09:33',
+          'text':
+              'Bravo 02 copied your flood SOS at KB Jacob Road. Our boat unit is ~8 minutes out—please stay on the upper floor.',
+          'isSelf': false,
+        },
+      ];
     _lastSubmittedRequest = _requests.isNotEmpty ? _requests.first : null;
     _draftResources.clear();
     _resourcesError = null;
@@ -624,10 +805,24 @@ class RescueProvider extends ChangeNotifier {
       isRegistered: true,
     );
     notifyListeners();
+    _persistNow();
   }
 
-  void _onLiveAuthenticated() {
+  void _onLiveAuthenticated() async {
     initLocationTracking();
+    if (!_isDemoMode && CommandCenterService.authTokenNeedsUpgrade()) {
+      final identifier = _currentUser.phoneNumber.isNotEmpty
+          ? _currentUser.phoneNumber
+          : (_phoneNumber.isNotEmpty ? _phoneNumber : _email);
+      if (identifier.trim().isNotEmpty) {
+        try {
+          await CommandCenterService.authenticateCitizen(
+            identifier: identifier.trim(),
+            name: _currentUser.fullName.isNotEmpty ? _currentUser.fullName : 'Citizen',
+          );
+        } catch (_) {}
+      }
+    }
     loadMyRequestsFromBackend();
     loadAlertsFromBackend();
     loadResourcesFromBackend();
@@ -639,11 +834,13 @@ class RescueProvider extends ChangeNotifier {
     _isLoggedIn = true;
     _hasOtpError = false;
     _requests.clear();
+    _incidentChats.clear();
     _liveAlerts = [];
     _availableResources = [];
     _draftResources.clear();
     _lastSubmittedRequest = null;
     notifyListeners();
+    _persistNow();
     final identifier =
         _authMethod == 'phone' ? _phoneNumber : _email;
     CommandCenterService.authenticateCitizen(
@@ -665,6 +862,7 @@ class RescueProvider extends ChangeNotifier {
           isRegistered: true,
         );
         notifyListeners();
+        _persistNow();
       }
       _onLiveAuthenticated();
     }).catchError((_) {
@@ -686,6 +884,7 @@ class RescueProvider extends ChangeNotifier {
       _isLoggedIn = true;
       _hasOtpError = false;
       _requests.clear();
+      _incidentChats.clear();
       _liveAlerts = [];
       _availableResources = [];
       _draftResources.clear();
@@ -695,6 +894,7 @@ class RescueProvider extends ChangeNotifier {
         _authMethod = 'email';
       }
       notifyListeners();
+      await _persistNow();
       _onLiveAuthenticated();
       return null;
     } catch (e) {
@@ -745,6 +945,7 @@ class RescueProvider extends ChangeNotifier {
     _isLoggedIn = true;
     _hasOtpError = false;
     _requests.clear();
+    _incidentChats.clear();
     _liveAlerts = [];
     _availableResources = [];
     _draftResources.clear();
@@ -757,6 +958,7 @@ class RescueProvider extends ChangeNotifier {
       _authMethod = 'email';
     }
     notifyListeners();
+    await _persistNow();
     _onLiveAuthenticated();
     return null;
   }
@@ -783,6 +985,7 @@ class RescueProvider extends ChangeNotifier {
     _isLoggedIn = true;
     _hasOtpError = false;
     _requests.clear();
+    _incidentChats.clear();
     _liveAlerts = [];
     _availableResources = [];
     _draftResources.clear();
@@ -795,6 +998,7 @@ class RescueProvider extends ChangeNotifier {
       _authMethod = 'email';
     }
     notifyListeners();
+    _persistNow();
     CommandCenterService.authenticateCitizen(
       identifier: profile.phoneNumber.isNotEmpty ? profile.phoneNumber : profile.email,
       name: profile.fullName,
@@ -804,10 +1008,13 @@ class RescueProvider extends ChangeNotifier {
   }
 
   void logout() {
+    _persistTimer?.cancel();
     CommandCenterService.stopAllTracking();
     CommandCenterService.setAuthToken('');
     AccountStorageService.clearToken();
+    AccountStorageService.clearSessionState();
     _requests.clear();
+    _incidentChats.clear();
     _liveAlerts = [];
     _availableResources = [];
     _draftResources.clear();
@@ -839,6 +1046,7 @@ class RescueProvider extends ChangeNotifier {
     _isLoggedIn = true;
     _hasOtpError = false;
     _requests.clear();
+    _incidentChats.clear();
     _liveAlerts = [];
     _availableResources = [];
     _draftResources.clear();
@@ -851,17 +1059,20 @@ class RescueProvider extends ChangeNotifier {
       _authMethod = 'email';
     }
     notifyListeners();
+    await _persistNow();
     _onLiveAuthenticated();
   }
 
   void setActiveNavIndex(int index) {
     _activeNavIndex = index;
     notifyListeners();
+    _schedulePersist();
   }
 
   void setRequestsFilterTab(int tab) {
     _requestsFilterTab = tab;
     notifyListeners();
+    _schedulePersist();
   }
 
   void setDraftType(EmergencyType type) {
@@ -869,39 +1080,46 @@ class RescueProvider extends ChangeNotifier {
     _draftPhotoAsset = type.imagePath;
     _draftPhotoName = '${type.id}_incident_recon.png · 1.4 MB';
     notifyListeners();
+    _schedulePersist();
   }
 
   void setDraftPhoto(String asset, String name) {
     _draftPhotoAsset = asset;
     _draftPhotoName = name;
     notifyListeners();
+    _schedulePersist();
   }
 
   void setDraftAddress(String address, [String? city]) {
     _draftAddress = address;
     if (city != null) _draftCity = city;
     notifyListeners();
+    _schedulePersist();
   }
 
   void setDraftCoordinates(double latitude, double longitude) {
     _draftLatitude = latitude;
     _draftLongitude = longitude;
     notifyListeners();
+    _schedulePersist();
   }
 
   void setDraftDescription(String desc) {
     _draftDescription = desc;
     notifyListeners();
+    _schedulePersist();
   }
 
   void setDraftContact(String contact) {
     _draftContact = contact;
     notifyListeners();
+    _schedulePersist();
   }
 
   void setDraftConsent(bool consent) {
     _draftConsent = consent;
     notifyListeners();
+    _schedulePersist();
   }
 
   void setResourceQuantity(String resourceId, int quantity, {int max = 99}) {
@@ -912,6 +1130,7 @@ class RescueProvider extends ChangeNotifier {
       _draftResources[resourceId] = bounded;
     }
     notifyListeners();
+    _schedulePersist();
   }
 
   void incrementResource(String resourceId, {int max = 99}) {
@@ -919,6 +1138,7 @@ class RescueProvider extends ChangeNotifier {
     if (current < (max < 1 ? 1 : max)) {
       _draftResources[resourceId] = current + 1;
       notifyListeners();
+      _schedulePersist();
     }
   }
 
@@ -930,17 +1150,20 @@ class RescueProvider extends ChangeNotifier {
       _draftResources[resourceId] = current - 1;
     }
     notifyListeners();
+    _schedulePersist();
   }
 
   void clearDraftResources() {
     if (_draftResources.isEmpty) return;
     _draftResources.clear();
     notifyListeners();
+    _schedulePersist();
   }
 
   void setCurrentLocation(String location) {
     _currentLocationName = location;
     notifyListeners();
+    _schedulePersist();
   }
 
   /// 1-Click Instant SOS Dispatch with Live GPS lock
@@ -1018,6 +1241,7 @@ class RescueProvider extends ChangeNotifier {
     }
 
     notifyListeners();
+    await _persistNow();
     return sosRequest;
   }
 
@@ -1114,6 +1338,7 @@ class RescueProvider extends ChangeNotifier {
     }
 
     notifyListeners();
+    await _persistNow();
     return _lastSubmittedRequest ?? newRequest;
   }
 
@@ -1135,7 +1360,8 @@ class RescueProvider extends ChangeNotifier {
 
     final existing = _requests[index];
     final backendStatus = (update['status'] ?? '').toString().toLowerCase();
-    final assignedTeam = (update['assignedTeam'] ?? update['teamAssigned'] ?? '').toString();
+    final assignedTeam = (update['assignedTeam'] ?? update['teamAssigned'] ?? '').toString().trim();
+    final assignedTeamId = (update['assignedTeamId'] ?? '').toString().trim();
     final eta = (update['eta'] ?? '').toString();
 
     String dispatchText = existing.dispatchUpdate;
@@ -1157,9 +1383,14 @@ class RescueProvider extends ChangeNotifier {
     }
 
     final parsedRes = _parseRequestedResources(update['requestedResources']);
+    final hasValidTeam =
+        assignedTeam.isNotEmpty && assignedTeam != 'Unassigned' && assignedTeam != 'null';
+    final hasValidTeamId = assignedTeamId.isNotEmpty && assignedTeamId != 'null';
     _requests[index] = existing.copyWith(
       status: newStatus,
       dispatchUpdate: dispatchText,
+      assignedTeam: hasValidTeam ? assignedTeam : existing.assignedTeam,
+      assignedTeamId: hasValidTeamId ? assignedTeamId : existing.assignedTeamId,
       requestedResources: parsedRes.isNotEmpty ? parsedRes : existing.requestedResources,
     );
 
@@ -1168,6 +1399,7 @@ class RescueProvider extends ChangeNotifier {
     }
 
     notifyListeners();
+    _schedulePersist();
   }
 
   Future<void> loadMyRequestsFromBackend() async {
@@ -1181,18 +1413,21 @@ class RescueProvider extends ChangeNotifier {
 
       final rows = await CommandCenterService.fetchMyRequests(phone);
       if (_isDemoMode) return;
-      _requests
-        ..clear()
-        ..addAll(rows.map(_mapBackendIncident));
-      if (_requests.isNotEmpty) {
-        _lastSubmittedRequest ??= _requests.first;
-        for (final req in _requests) {
-          if (req.status != RequestStatus.resolved) {
-            CommandCenterService.startTrackingRequest(req.id, (update) {
-              _updateRequestFromBackend(req.id, update);
-            });
+      if (CommandCenterService.lastRequestsFetchSucceeded) {
+        _requests
+          ..clear()
+          ..addAll(rows.map(_mapBackendIncident));
+        if (_requests.isNotEmpty) {
+          _lastSubmittedRequest ??= _requests.first;
+          for (final req in _requests) {
+            if (req.status != RequestStatus.resolved) {
+              CommandCenterService.startTrackingRequest(req.id, (update) {
+                _updateRequestFromBackend(req.id, update);
+              });
+            }
           }
         }
+        _schedulePersist();
       }
     } finally {
       _loadingRequests = false;
@@ -1207,7 +1442,10 @@ class RescueProvider extends ChangeNotifier {
     try {
       final rows = await CommandCenterService.fetchAlerts();
       if (_isDemoMode) return;
-      _liveAlerts = rows;
+      if (CommandCenterService.lastAlertsFetchSucceeded) {
+        _liveAlerts = rows;
+        _schedulePersist();
+      }
     } finally {
       _loadingAlerts = false;
       notifyListeners();
@@ -1226,6 +1464,7 @@ class RescueProvider extends ChangeNotifier {
         _resourcesError = 'No resource catalog loaded from Command Center.';
       } else {
         _availableResources = rows;
+        _schedulePersist();
       }
     } catch (e) {
       _resourcesError = e.toString();
@@ -1235,6 +1474,172 @@ class RescueProvider extends ChangeNotifier {
     }
   }
 
+  List<Map<String, dynamic>> chatMessagesForIncident(String incidentId) {
+    return List.unmodifiable(_incidentChats[incidentId] ?? const []);
+  }
+
+  Map<String, dynamic>? latestChatMessageForIncident(String incidentId) {
+    final list = _incidentChats[incidentId];
+    if (list == null || list.isEmpty) return null;
+    return list.last;
+  }
+
+  void _appendChatMessage(String incidentId, Map<String, dynamic> rawMsg) {
+    final msg = Map<String, dynamic>.from(rawMsg);
+    final list = _incidentChats.putIfAbsent(incidentId, () => []);
+    final msgId = (msg['id'] ?? '').toString();
+    final alreadyExists = msgId.isNotEmpty && list.any((m) => m['id']?.toString() == msgId);
+    if (alreadyExists) return;
+    list.add(msg);
+    notifyListeners();
+    _schedulePersist();
+  }
+
+  Future<String?> loadIncidentChat(String incidentId) async {
+    if (_isDemoMode) return null;
+    final res = await CommandCenterService.fetchIncidentChat(incidentId);
+    if (res['success'] == true) {
+      final rawMessages = res['messages'];
+      if (rawMessages is List) {
+        final serverMsgs = rawMessages
+            .whereType<Map>()
+            .map((m) => Map<String, dynamic>.from(m))
+            .toList();
+        final serverIds = serverMsgs
+            .map((m) => (m['id'] ?? '').toString())
+            .where((id) => id.isNotEmpty)
+            .toSet();
+        final existing = _incidentChats[incidentId] ?? const [];
+        final merged = <Map<String, dynamic>>[
+          ...serverMsgs,
+          ...existing.where((m) {
+            final id = (m['id'] ?? '').toString();
+            return id.isNotEmpty && !serverIds.contains(id);
+          }),
+        ];
+        _incidentChats[incidentId] = merged;
+      }
+
+      // Synchronize assignment fields in case dispatch arrived before poll tick
+      final teamName = (res['assignedTeam'] ?? '').toString().trim();
+      final teamId = (res['assignedTeamId'] ?? '').toString().trim();
+      if (teamName.isNotEmpty || teamId.isNotEmpty) {
+        final idx = _requests.indexWhere((r) => r.id == incidentId);
+        if (idx != -1) {
+          _requests[idx] = _requests[idx].copyWith(
+            assignedTeam: teamName.isNotEmpty ? teamName : _requests[idx].assignedTeam,
+            assignedTeamId: teamId.isNotEmpty ? teamId : _requests[idx].assignedTeamId,
+          );
+          if (_lastSubmittedRequest?.id == incidentId) {
+            _lastSubmittedRequest = _requests[idx];
+          }
+        }
+      }
+
+      notifyListeners();
+      _schedulePersist();
+      return null;
+    }
+    if (res['networkError'] == true) return null;
+    return res['error']?.toString();
+  }
+
+  Future<({bool ok, String? error})> sendIncidentChatMessage({
+    required String incidentId,
+    required String text,
+  }) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      return (ok: false, error: 'Message cannot be empty');
+    }
+
+    final reqIndex = _requests.indexWhere((r) => r.id == incidentId);
+    final req = reqIndex != -1 ? _requests[reqIndex] : null;
+    if (req == null || !req.hasAssignedTeam) {
+      return (ok: false, error: 'A rescue team must be assigned before you can send messages.');
+    }
+
+    final now = DateTime.now();
+    final msgId = 'cit_msg_${now.microsecondsSinceEpoch}';
+    final senderName = _currentUser.fullName.isNotEmpty ? _currentUser.fullName : 'Citizen';
+    final timeStr =
+        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+
+    final optimistic = <String, dynamic>{
+      'id': msgId,
+      'channel': 'incident-$incidentId',
+      'sender': senderName,
+      'senderRole': 'citizen',
+      'role': 'Citizen',
+      'initials': senderName.isNotEmpty ? senderName[0].toUpperCase() : 'C',
+      'time': timeStr,
+      'text': trimmed,
+      'locationTag': _currentLocationName,
+      'isSelf': true,
+      'createdAt': now.toIso8601String(),
+    };
+
+    final list = _incidentChats.putIfAbsent(incidentId, () => []);
+    list.add(optimistic);
+    notifyListeners();
+    _schedulePersist();
+
+    if (_isDemoMode) {
+      final teamName = req.assignedTeam ?? 'Rescue Team';
+      Future.delayed(const Duration(milliseconds: 850), () {
+        if (!_isDemoMode) return;
+        final replyNow = DateTime.now();
+        final replyTime =
+            '${replyNow.hour.toString().padLeft(2, '0')}:${replyNow.minute.toString().padLeft(2, '0')}';
+        _appendChatMessage(incidentId, {
+          'id': 'demo_reply_${replyNow.microsecondsSinceEpoch}',
+          'channel': 'incident-$incidentId',
+          'sender': teamName,
+          'senderRole': 'rescue',
+          'role': '$teamName · Assigned Unit',
+          'initials': teamName.isNotEmpty ? teamName[0].toUpperCase() : 'R',
+          'time': replyTime,
+          'text': 'Received by $teamName: "$trimmed". Keep this line open—we are tracking your location.',
+          'isSelf': false,
+          'createdAt': replyNow.toIso8601String(),
+        });
+      });
+      return (ok: true, error: null);
+    }
+
+    final res = await CommandCenterService.sendIncidentChat(
+      incidentId: incidentId,
+      text: trimmed,
+      id: msgId,
+      sender: senderName,
+      locationTag: _currentLocationName,
+    );
+
+    if (res['success'] == true) {
+      if (res['message'] is Map) {
+        final authoritative = Map<String, dynamic>.from(res['message'] as Map);
+        final replaceIdx = list.indexWhere((m) => m['id'] == msgId);
+        if (replaceIdx != -1) {
+          list[replaceIdx] = authoritative;
+        } else {
+          _appendChatMessage(incidentId, authoritative);
+        }
+        notifyListeners();
+        _schedulePersist();
+      }
+      return (ok: true, error: null);
+    }
+
+    if (res['networkError'] != true) {
+      list.removeWhere((m) => m['id'] == msgId);
+      notifyListeners();
+      _schedulePersist();
+      return (ok: false, error: res['error']?.toString() ?? 'Failed to send message');
+    }
+
+    return (ok: true, error: null);
+  }
+
   void _startRealtimeSync() {
     if (_isDemoMode) return;
     CommandCenterService.startLiveUpdates(
@@ -1242,6 +1647,19 @@ class RescueProvider extends ChangeNotifier {
         if (_isDemoMode) return;
         if (eventName == 'alert_created') {
           loadAlertsFromBackend();
+          return;
+        }
+        if (eventName == 'new_chat_message') {
+          final channel = (payload['channel'] ?? '').toString();
+          final rawMsg = payload['message'];
+          if (channel.startsWith('incident-') && rawMsg is Map) {
+            final incId = (payload['incidentId'] ?? channel.substring('incident-'.length))
+                .toString()
+                .trim();
+            if (incId.isNotEmpty) {
+              _appendChatMessage(incId, Map<String, dynamic>.from(rawMsg));
+            }
+          }
           return;
         }
         final nested = payload['incident'] ?? payload['request'];
@@ -1284,12 +1702,14 @@ class RescueProvider extends ChangeNotifier {
       type = EmergencyType.fire;
     }
 
-    final assignedTeam = (row['assignedTeam'] ?? '').toString();
-    final dispatchUpdate =
-        assignedTeam.isNotEmpty && assignedTeam != 'Unassigned'
-            ? '$assignedTeam assigned by Command Center'
-            : (row['dispatchUpdate'] ?? 'Awaiting triage by Command Center')
-                .toString();
+    final assignedTeam = (row['assignedTeam'] ?? row['teamAssigned'] ?? '').toString().trim();
+    final assignedTeamId = (row['assignedTeamId'] ?? '').toString().trim();
+    final hasValidTeam =
+        assignedTeam.isNotEmpty && assignedTeam != 'Unassigned' && assignedTeam != 'null';
+    final hasValidTeamId = assignedTeamId.isNotEmpty && assignedTeamId != 'null';
+    final dispatchUpdate = hasValidTeam
+        ? '$assignedTeam assigned by Command Center'
+        : (row['dispatchUpdate'] ?? 'Awaiting triage by Command Center').toString();
 
     final createdAt = DateTime.tryParse((row['reportedAt'] ?? row['createdAt'] ?? '').toString()) ??
         DateTime.now();
@@ -1310,6 +1730,8 @@ class RescueProvider extends ChangeNotifier {
       contactNumber: (row['contactNumber'] ?? _currentUser.phoneNumber).toString(),
       photoCount: 0,
       requestedResources: _parseRequestedResources(row['requestedResources']),
+      assignedTeam: hasValidTeam ? assignedTeam : null,
+      assignedTeamId: hasValidTeamId ? assignedTeamId : null,
       createdAt: createdAt,
       isRecent: true,
     );

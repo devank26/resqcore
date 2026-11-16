@@ -12,6 +12,7 @@ import { ReportsPage } from './pages/ReportsPage';
 import { CommunicationPage } from './pages/CommunicationPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { OSPanel } from './components/os/OSPanel';
+import { SchedulerLabPage } from './components/os/SchedulerLabPage';
 
 export const App = () => {
   const { isAuthenticated, authChecking, activeTab, isDemoMode } = useApp();
@@ -36,7 +37,8 @@ export const App = () => {
     'incidents': { title: 'Incidents', breadcrumb: opBreadcrumb },
     'teams': { title: 'Teams', breadcrumb: opBreadcrumb },
     'reports': { title: 'Reports', breadcrumb: opBreadcrumb },
-    'os-engine': { title: 'OS Scheduler & Resources', breadcrumb: opBreadcrumb },
+    'os-engine': { title: 'OS Monitor', breadcrumb: opBreadcrumb },
+    'scheduler-lab': { title: 'Scheduler Lab', breadcrumb: opBreadcrumb },
     'communication': { title: 'Communication', breadcrumb: opBreadcrumb },
     'settings': { title: 'Settings', breadcrumb: opBreadcrumb }
   };
@@ -68,6 +70,7 @@ export const App = () => {
           {activeTab === 'teams' && <TeamsPage />}
           {activeTab === 'reports' && <ReportsPage />}
           {activeTab === 'os-engine' && <OSPanel />}
+          {activeTab === 'scheduler-lab' && <SchedulerLabPage />}
           {activeTab === 'communication' && <CommunicationPage />}
           {activeTab === 'settings' && <SettingsPage />}
         </main>

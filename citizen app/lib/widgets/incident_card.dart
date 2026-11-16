@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/emergency_request.dart';
 import '../models/emergency_type.dart';
+import '../screens/incident_chat_screen.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text_styles.dart';
 import 'status_badge.dart';
@@ -289,6 +290,58 @@ class IncidentCard extends StatelessWidget {
                 ],
               ),
             ),
+            if (request.hasAssignedTeam) ...[
+              const SizedBox(height: 8),
+              Material(
+                color: AppColors.successContainer.withValues(alpha: 0.35),
+                borderRadius: BorderRadius.circular(8),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => CitizenTeamChatScreen(initialRequest: request),
+                      ),
+                    );
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: AppColors.success.withValues(alpha: 0.45),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.forum_outlined,
+                          size: 15,
+                          color: AppColors.successLight,
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            'Chat with ${request.assignedTeam ?? "Assigned Team"}',
+                            style: AppTextStyles.labelSm.copyWith(
+                              color: AppColors.successLight,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 12,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const Icon(
+                          Icons.arrow_forward_ios,
+                          size: 12,
+                          color: AppColors.successLight,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),

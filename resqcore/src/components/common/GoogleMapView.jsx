@@ -312,20 +312,32 @@ export const GoogleMapView = ({
       pointCount += 1;
 
       if (showHeatmap && window.google.maps.Circle) {
-        const heatColor = isSOS || incident.severity === 'High' || incident.severity === 'Critical'
-          ? '#EF4444'
-          : '#F59E0B';
-        const heatCircle = new window.google.maps.Circle({
+        const isHighSeverity = isSOS || incident.severity === 'High' || incident.severity === 'Critical';
+        const heatColor = isHighSeverity ? '#EF4444' : incident.severity === 'Medium' ? '#F59E0B' : '#3B82F6';
+        const affectedCount = Math.max(1, Number(incident.affected ?? incident.affectedCount ?? 1) || 1);
+        const radiusScale = Math.min(1.8, 1 + Math.log10(affectedCount) * 0.3);
+        const outerRadius = (isSOS || incident.severity === 'Critical' ? 2800 : 1800) * radiusScale;
+        const outerCircle = new window.google.maps.Circle({
           strokeOpacity: 0,
           fillColor: heatColor,
-          fillOpacity: 0.25,
+          fillOpacity: 0.18,
           map: mapInstanceRef.current,
           center: { lat, lng },
-          radius: isSOS ? 2800 : 1800,
+          radius: outerRadius,
+          clickable: false,
+          zIndex: 4
+        });
+        const coreCircle = new window.google.maps.Circle({
+          strokeOpacity: 0,
+          fillColor: heatColor,
+          fillOpacity: isHighSeverity ? 0.34 : 0.25,
+          map: mapInstanceRef.current,
+          center: { lat, lng },
+          radius: Math.round(outerRadius * 0.45),
           clickable: false,
           zIndex: 5
         });
-        missionsRef.current.push(heatCircle);
+        missionsRef.current.push(outerCircle, coreCircle);
       }
 
       const markerSize = isSOS ? (isSelected ? 48 : 40) : (isSelected ? 38 : 30);

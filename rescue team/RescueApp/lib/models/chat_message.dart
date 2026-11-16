@@ -85,9 +85,29 @@ class ChatMessage {
       createdAt: (json['createdAt'] ?? json['timestamp'])?.toString(),
       isAlert: json['isAlert'] == true,
       isBot: json['isBot'] == true,
-      isMe: isCurrentSelf,
+      isMe: isCurrentSelf || (json['isMe'] == true),
     );
   }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'channel': channel,
+        'sender': sender,
+        if (senderId != null) 'senderId': senderId,
+        if (senderRole != null) 'senderRole': senderRole,
+        'initials': initials,
+        'role': role,
+        'time': time,
+        'text': text,
+        if (locationTag != null) 'locationTag': locationTag,
+        if (attachmentUrl != null) 'attachmentUrl': attachmentUrl,
+        if (attachmentCoords != null) 'attachmentCoords': attachmentCoords,
+        if (createdAt != null) 'createdAt': createdAt,
+        'isAlert': isAlert,
+        'isBot': isBot,
+        'isMe': isMe,
+        'isSelf': isMe,
+      };
 
   static List<ChatMessage> mockMessages() {
     return [

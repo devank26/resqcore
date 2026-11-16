@@ -3,6 +3,8 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { BACKEND_ROOT, DATABASE_URL, IS_PROD } from './config.js';
+import { hashPassword } from './auth.js';
+import { conflict, notFound } from './errors.js';
 import { referenceSectors, referenceShelters, referenceVolunteers } from '../data/seedData.js';
 
 const { Pool } = pg;
@@ -134,6 +136,78 @@ class DatabaseManager {
       });
       console.log(`[PostgreSQL DB] Seeded ${referenceVolunteers.length} reference volunteers`);
     }
+
+    const defaultCmdUser = await this.getUserByIdentifier('vaibhav@gov.in');
+    if (!defaultCmdUser) {
+      const pwHash = await hashPassword('vaibhav12345');
+      await this.upsertUser({
+        id: 'usr-vaibhav-cmd',
+        name: 'Vaibhav',
+        email: 'vaibhav@gov.in',
+        passwordHash: pwHash,
+        role: 'command'
+      });
+      console.log('[PostgreSQL DB] Seeded Command Center account: vaibhav@gov.in');
+    }
+  }
+
+  // =================== USERS ===================
+  async getUserByIdentifier(identifier) {
+    if (!identifier) return null;
+    const cleaned = String(identifier).trim();
+    if (!cleaned) return null;
+    const res = await this.query(
+      'SELECT * FROM users WHERE LOWER(email) = LOWER($1) OR phone = $1 OR LOWER(name) = LOWER($1) LIMIT 1',
+      [cleaned]
+    );
+    return res.rows[0] ? this._parseUser(res.rows[0]) : null;
+  }
+
+  async getUserById(id) {
+    if (!id) return null;
+    const res = await this.query('SELECT * FROM users WHERE id = $1 LIMIT 1', [id]);
+    return res.rows[0] ? this._parseUser(res.rows[0]) : null;
+  }
+
+  async upsertUser({ id, name, email, phone, passwordHash, role = 'citizen', teamId = null }) {
+    const cleanEmail = email ? String(email).trim().toLowerCase() : null;
+    const cleanPhone = phone ? String(phone).trim() : null;
+    const existing = (cleanEmail && await this.getUserByIdentifier(cleanEmail))
+      || (cleanPhone && await this.getUserByIdentifier(cleanPhone));
+    if (existing) {
+      await this.query(
+        `UPDATE users
+         SET name = COALESCE($1, name),
+             email = COALESCE($2, email),
+             phone = COALESCE($3, phone),
+             password_hash = COALESCE($4, password_hash),
+             role = COALESCE($5, role),
+             team_id = COALESCE($6, team_id)
+         WHERE id = $7`,
+        [name || null, cleanEmail, cleanPhone, passwordHash || null, role || null, teamId, existing.id]
+      );
+      return this.getUserById(existing.id);
+    }
+    const uid = id || `usr-${shortId(8).toLowerCase()}`;
+    await this.query(
+      `INSERT INTO users (id, name, email, phone, password_hash, role, team_id, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [uid, name || 'Operator', cleanEmail, cleanPhone, passwordHash || null, role, teamId, nowIso()]
+    );
+    return this.getUserById(uid);
+  }
+
+  _parseUser(r) {
+    return {
+      id: r.id,
+      name: r.name,
+      email: r.email,
+      phone: r.phone,
+      passwordHash: r.password_hash,
+      role: r.role,
+      teamId: r.team_id,
+      createdAt: r.created_at
+    };
   }
 
   // =================== SECTORS ===================
@@ -189,18 +263,65 @@ class DatabaseManager {
   }
 
   // =================== TEAMS ===================
-  async createTeam({ name, callsign, specialization, responders, createdBy }) {
+  async createTeam({
+    name,
+    callsign,
+    specialization,
+    status = 'Available',
+    responders,
+    createdBy,
+    sectorId,
+    sectorLabel,
+    commanderName,
+    commanderPhone,
+    frequency,
+    lat,
+    lng
+  }) {
     const id = `team-${crypto.randomBytes(5).toString('hex')}`;
     const ts = nowIso();
     await this.query(
-      `INSERT INTO teams (id, name, callsign, specialization, status, responders, created_by, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, 'Available', $5, $6, $7, $8)`,
-      [id, name, callsign || null, specialization || null, responders || 1, createdBy || null, ts, ts]
+      `INSERT INTO teams (
+         id, name, callsign, specialization, status, responders,
+         sector_id, sector_label, commander_name, commander_phone, frequency,
+         lat, lng, created_by, created_at, updated_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+      [
+        id,
+        name,
+        callsign || null,
+        specialization || null,
+        status || 'Available',
+        responders || 1,
+        sectorId || null,
+        sectorLabel || null,
+        commanderName || createdBy || null,
+        commanderPhone || null,
+        frequency || null,
+        lat ?? null,
+        lng ?? null,
+        createdBy || null,
+        ts,
+        ts
+      ]
     );
     return this.getTeamById(id);
   }
 
-  async findOrCreateTeam({ teamId, name, callsign, specialization, responders, createdBy }) {
+  async findOrCreateTeam({
+    teamId,
+    name,
+    callsign,
+    specialization,
+    responders,
+    createdBy,
+    sectorId,
+    sectorLabel,
+    commanderName,
+    commanderPhone,
+    frequency
+  }) {
     if (teamId) {
       const existingById = await this.getTeamById(teamId);
       if (existingById) return { team: existingById, created: false };
@@ -214,7 +335,12 @@ class DatabaseManager {
       callsign,
       specialization,
       responders,
-      createdBy
+      createdBy,
+      sectorId,
+      sectorLabel,
+      commanderName,
+      commanderPhone,
+      frequency
     });
     return { team, created: true };
   }
@@ -239,7 +365,10 @@ class DatabaseManager {
   async updateTeam(id, patch, client = null) {
     const map = {
       status: 'status', battery: 'battery', task: 'task', eta: 'eta',
-      lat: 'lat', lng: 'lng', sectorId: 'sector_id', responders: 'responders'
+      lat: 'lat', lng: 'lng', sectorId: 'sector_id', responders: 'responders',
+      callsign: 'callsign', specialization: 'specialization',
+      sectorLabel: 'sector_label', commanderName: 'commander_name',
+      commanderPhone: 'commander_phone', frequency: 'frequency'
     };
     const sets = [];
     const params = [];
@@ -298,6 +427,7 @@ class DatabaseManager {
 
   _parseTeam(r) {
     const hasFix = r.lat != null && r.lng != null;
+    const commander = r.commander_name || r.created_by || r.name;
     return {
       id: r.id,
       name: r.name,
@@ -306,11 +436,17 @@ class DatabaseManager {
       type: r.specialization || 'SAR',
       status: r.status,
       responders: r.responders,
+      personnel: r.responders,
       task: r.task,
       battery: r.battery,
       eta: r.eta,
       coordinates: hasFix ? { lat: r.lat, lng: r.lng, latitude: r.lat, longitude: r.lng } : null,
       sectorId: r.sector_id,
+      sector: r.sector_label || r.sector_id || r.specialization || 'Field Sector',
+      commanderName: commander,
+      lead: commander,
+      commanderPhone: r.commander_phone || null,
+      frequency: r.frequency || 'Ch 4A (156.8MHz)',
       createdAt: r.created_at,
       lastUpdate: r.updated_at
     };
@@ -325,16 +461,20 @@ class DatabaseManager {
 
   async insertIncident(data) {
     const ts = nowIso();
+    const rawReq = data.requestedResources;
     const requestedResourcesJson = JSON.stringify(
-      Array.isArray(data.requestedResources) ? data.requestedResources : []
+      Array.isArray(rawReq) || (rawReq && typeof rawReq === 'object') ? rawReq : []
+    );
+    const otherNeedsJson = JSON.stringify(
+      Array.isArray(data.otherNeeds) ? data.otherNeeds : []
     );
     await this.query(
       `INSERT INTO incidents (
          id, title, type, location, short_location, area, affected, severity, status,
          response_summary, response_detail, description, field_report, contact_number,
          citizen_name, citizen_user_id, assigned_team, assigned_team_id, eta, substatus,
-         coordinates_json, lat, lng, sector_id, is_citizen_sos, is_rescue_sos, requested_resources_json, created_by, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, '{}', $21, $22, $23, $24, $25, $26, $27, $28, $29)`,
+         coordinates_json, lat, lng, sector_id, is_citizen_sos, is_rescue_sos, requested_resources_json, other_needs_json, created_by, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, '{}', $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)`,
       [
         data.id, data.title, data.type ?? null, data.location ?? '', data.shortLocation ?? '', data.area ?? '',
         data.affected ?? 1, data.severity, data.status,
@@ -342,7 +482,7 @@ class DatabaseManager {
         data.contactNumber ?? '', data.citizenName ?? '', data.citizenUserId ?? null,
         data.assignedTeam ?? null, data.assignedTeamId ?? null, data.eta ?? null, data.substatus ?? '',
         data.lat ?? null, data.lng ?? null, data.sectorId ?? null,
-        bool(data.isCitizenSOS), bool(data.isRescueSOS), requestedResourcesJson, data.createdBy ?? null, ts, ts
+        bool(data.isCitizenSOS), bool(data.isRescueSOS), requestedResourcesJson, otherNeedsJson, data.createdBy ?? null, ts, ts
       ]
     );
     return this.getIncidentById(data.id);
@@ -452,8 +592,31 @@ class DatabaseManager {
         }
       }
       const relRes = await client.query('SELECT release_incident_resources($1) AS released', [incidentId]);
-      return Number(relRes.rows[0]?.released || 0);
+      const releasedVolunteers = await this.releaseVolunteersForIncident(incidentId, client);
+      return {
+        releasedResources: Number(relRes.rows[0]?.released || 0),
+        releasedVolunteers
+      };
     });
+  }
+
+  async releaseIncidentAllocations(incidentId) {
+    const res = await this.query('SELECT release_incident_resources($1) AS released', [incidentId]);
+    return Number(res.rows[0]?.released || 0);
+  }
+
+  async releaseOldTeamAssignment(incidentId, oldTeamId) {
+    if (!incidentId || !oldTeamId) return null;
+    await this.query(
+      `UPDATE assignments SET status = 'Completed'
+       WHERE incident_id = $1 AND team_id = $2 AND status IN ('Assigned', 'On site')`,
+      [incidentId, oldTeamId]
+    );
+    const remaining = await this.countActiveIncidentsForTeam(oldTeamId);
+    if (remaining === 0) {
+      return this.updateTeam(oldTeamId, { status: 'Available', task: null, eta: null });
+    }
+    return this.getTeamById(oldTeamId);
   }
 
   async getResourcesSnapshot() {
@@ -510,6 +673,17 @@ class DatabaseManager {
       requestedResources: (() => {
         try {
           const parsed = JSON.parse(r.requested_resources_json || '[]');
+          if (Array.isArray(parsed) || (parsed && typeof parsed === 'object')) {
+            return parsed;
+          }
+          return [];
+        } catch {
+          return [];
+        }
+      })(),
+      otherNeeds: (() => {
+        try {
+          const parsed = JSON.parse(r.other_needs_json || '[]');
           return Array.isArray(parsed) ? parsed : [];
         } catch {
           return [];
@@ -577,12 +751,24 @@ class DatabaseManager {
   }
 
   async upsertVolunteerForUser(userId, data) {
-    const existing = await this.query('SELECT id FROM volunteers WHERE user_id = $1', [userId]);
     const ts = nowIso();
+    let existing = { rows: [] };
+    if (data.allowMultiple) {
+      existing = await this.query(
+        `SELECT id FROM volunteers
+         WHERE LOWER(name) = LOWER($1) AND COALESCE(phone, '') = $2
+         LIMIT 1`,
+        [data.name || '', data.phone || '']
+      );
+    } else {
+      existing = await this.query('SELECT id FROM volunteers WHERE user_id = $1 LIMIT 1', [userId]);
+    }
     if (existing.rows[0]) {
       const vid = existing.rows[0].id;
       await this.query(
-        `UPDATE volunteers SET name = $1, phone = $2, email = $3, skills = $4, sector_id = $5, lat = $6, lng = $7, team_id = $8, last_seen = $9
+        `UPDATE volunteers
+         SET name = $1, phone = $2, email = $3, skills = $4, sector_id = $5, lat = $6, lng = $7,
+             team_id = COALESCE(team_id, $8), last_seen = $9
          WHERE id = $10`,
         [
           data.name, data.phone || '', data.email || '', JSON.stringify(data.skills || []),
@@ -594,17 +780,125 @@ class DatabaseManager {
     const id = `VOL-${shortId(8)}`;
     await this.query(
       `INSERT INTO volunteers (id, user_id, name, phone, email, skills, sector_id, status, lat, lng, team_id, registered_at, last_seen)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'Available', $8, $9, $10, $11, $12)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
         id, userId, data.name, data.phone || '', data.email || '', JSON.stringify(data.skills || []),
-        data.sectorId ?? null, data.lat ?? null, data.lng ?? null, data.teamId ?? null, ts, ts
+        data.sectorId ?? null, data.initialStatus || 'Available', data.lat ?? null, data.lng ?? null,
+        data.teamId ?? null, ts, ts
       ]
     );
     return this.getVolunteerById(id);
   }
 
+  async assignVolunteerToIncidentAtomic({ volunteerId, teamId, teamName, incidentId }) {
+    return this.tx(async (client) => {
+      const volRes = await client.query('SELECT * FROM volunteers WHERE id = $1 FOR UPDATE', [volunteerId]);
+      const vol = volRes.rows[0];
+      if (!vol) throw notFound('Volunteer not found');
+
+      const incRes = await client.query('SELECT * FROM incidents WHERE id = $1 FOR UPDATE', [incidentId]);
+      const inc = incRes.rows[0];
+      if (!inc) throw notFound('Incident not found');
+      if (inc.status === 'Resolved') {
+        throw conflict('Cannot assign volunteer to a resolved incident');
+      }
+
+      const incTeamId = inc.assigned_team_id || '';
+      const incTeamName = (inc.assigned_team || '').trim();
+      const targetName = (teamName || '').trim();
+      if (!incTeamId && (!incTeamName || incTeamName.toLowerCase() === 'unassigned')) {
+        throw conflict('Incident has no assigned rescue mission yet');
+      }
+      const matchesTeam =
+        (incTeamId && incTeamId === teamId) ||
+        (incTeamName && targetName && incTeamName.toLowerCase() === targetName.toLowerCase());
+      if (!matchesTeam) {
+        throw conflict(`Incident ${incidentId} is assigned to ${incTeamName || incTeamId}, not ${targetName || teamId}`);
+      }
+
+      if (vol.team_id && vol.team_id !== teamId) {
+        throw conflict(`Volunteer ${vol.name} is already assigned to team ${vol.assigned_team_name || vol.team_id}`);
+      }
+      if (vol.assigned_incident_id && vol.assigned_incident_id !== incidentId) {
+        throw conflict(`Volunteer ${vol.name} is already assigned to active incident ${vol.assigned_incident_id}`);
+      }
+      if (vol.status !== 'Available' && vol.status !== 'Active') {
+        if (vol.team_id === teamId && vol.assigned_incident_id === incidentId) {
+          return this._parseVolunteer(vol);
+        }
+        throw conflict(`Volunteer ${vol.name} is ${vol.status} and cannot be assigned`);
+      }
+
+      const ts = nowIso();
+      const updRes = await client.query(
+        `UPDATE volunteers
+         SET status = 'Assigned',
+             team_id = $1,
+             assigned_team_name = $2,
+             assigned_incident_id = $3,
+             assigned_at = $4,
+             last_seen = $4
+         WHERE id = $5
+         RETURNING *`,
+        [teamId, targetName || teamId, incidentId, ts, volunteerId]
+      );
+      return this._parseVolunteer(updRes.rows[0]);
+    });
+  }
+
+  async unassignVolunteerFromIncident({ volunteerId, teamId, allowForce = false }) {
+    return this.tx(async (client) => {
+      const volRes = await client.query('SELECT * FROM volunteers WHERE id = $1 FOR UPDATE', [volunteerId]);
+      const vol = volRes.rows[0];
+      if (!vol) throw notFound('Volunteer not found');
+      if (!allowForce && vol.team_id && teamId && vol.team_id !== teamId) {
+        throw conflict(`Volunteer ${vol.name} is assigned to another team (${vol.assigned_team_name || vol.team_id})`);
+      }
+      const updRes = await client.query(
+        `UPDATE volunteers
+         SET status = 'Available',
+             team_id = NULL,
+             assigned_team_name = NULL,
+             assigned_incident_id = NULL,
+             assigned_at = NULL,
+             last_seen = $1
+         WHERE id = $2
+         RETURNING *`,
+        [nowIso(), volunteerId]
+      );
+      return this._parseVolunteer(updRes.rows[0]);
+    });
+  }
+
+  async releaseVolunteersForIncident(incidentId, client = null) {
+    if (!incidentId) return [];
+    const runner = client || this.pool;
+    const res = await runner.query(
+      `UPDATE volunteers
+       SET status = 'Available',
+           team_id = NULL,
+           assigned_team_name = NULL,
+           assigned_incident_id = NULL,
+           assigned_at = NULL,
+           last_seen = $1
+       WHERE assigned_incident_id = $2
+       RETURNING *`,
+      [nowIso(), incidentId]
+    );
+    return res.rows.map((r) => this._parseVolunteer(r));
+  }
+
   async updateVolunteerStatus(id, status) {
-    await this.query('UPDATE volunteers SET status = $1, last_seen = $2 WHERE id = $3', [status, nowIso(), id]);
+    if (status === 'Available') {
+      await this.query(
+        `UPDATE volunteers
+         SET status = $1, team_id = NULL, assigned_team_name = NULL, assigned_incident_id = NULL, assigned_at = NULL, last_seen = $2
+         WHERE id = $3`,
+        [status, nowIso(), id]
+      );
+    } else {
+      await this.query('UPDATE volunteers SET status = $1, last_seen = $2 WHERE id = $3', [status, nowIso(), id]);
+    }
     return this.getVolunteerById(id);
   }
 
@@ -612,9 +906,23 @@ class DatabaseManager {
     let skills = [];
     try { skills = JSON.parse(r.skills || '[]'); } catch (_) { /* ignore */ }
     return {
-      id: r.id, userId: r.user_id, name: r.name, phone: r.phone, email: r.email, skills,
-      sectorId: r.sector_id, status: r.status, lat: r.lat, lng: r.lng, teamId: r.team_id,
-      registeredAt: r.registered_at, lastSeen: r.last_seen
+      id: r.id,
+      userId: r.user_id,
+      name: r.name,
+      phone: r.phone,
+      email: r.email,
+      skills,
+      sectorId: r.sector_id,
+      status: r.status,
+      lat: r.lat,
+      lng: r.lng,
+      teamId: r.team_id || null,
+      assignedTeamId: r.team_id || null,
+      assignedTeamName: r.assigned_team_name || null,
+      assignedIncidentId: r.assigned_incident_id || null,
+      assignedAt: r.assigned_at || null,
+      registeredAt: r.registered_at,
+      lastSeen: r.last_seen
     };
   }
 
@@ -769,6 +1077,109 @@ class DatabaseManager {
       volunteers: await count('SELECT COUNT(*) AS c FROM volunteers'),
       activeSos: await count('SELECT COUNT(*) AS c FROM sos_events WHERE resolved = 0'),
       telemetryRecords: await count('SELECT COUNT(*) AS c FROM telemetry')
+    };
+  }
+
+  // =================== OS ENGINE PERSISTENCE ===================
+  async appendOsEvent({ type, pid = null, detail = '', payload = {} } = {}) {
+    await this.query(
+      `INSERT INTO os_event_log (event_type, pid, detail, payload_json, created_at)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [String(type || 'EVENT'), pid ? String(pid) : null, String(detail || ''), JSON.stringify(payload || {}), nowIso()]
+    );
+  }
+
+  async getRecentOsEvents(limit = 40) {
+    const safeLimit = Math.max(1, Math.min(200, Number(limit) || 40));
+    const res = await this.query(
+      'SELECT id, event_type, pid, detail, payload_json, created_at FROM os_event_log ORDER BY id DESC LIMIT $1',
+      [safeLimit]
+    );
+    return res.rows.map((r) => {
+      let payload = {};
+      try { payload = JSON.parse(r.payload_json || '{}'); } catch { payload = {}; }
+      return {
+        id: r.id,
+        type: r.event_type,
+        pid: r.pid,
+        detail: r.detail,
+        payload,
+        at: Date.parse(r.created_at) || Date.now(),
+        createdAt: r.created_at
+      };
+    });
+  }
+
+  async setResourceTotalsInDb(updates = {}) {
+    const KEY_TO_DB = {
+      ambulances: { id: 'ambulance', name: 'Ambulances' },
+      boats: { id: 'boat', name: 'Rescue Boats' },
+      medicalKits: { id: 'medical_kit', name: 'Medical Kits' },
+      foodPacks: { id: 'food_pack', name: 'Food Packets' }
+    };
+    return this.tx(async (client) => {
+      for (const [key, val] of Object.entries(updates || {})) {
+        const meta = KEY_TO_DB[key];
+        if (!meta) continue;
+        const n = Number(val);
+        if (!Number.isInteger(n) || n < 0) {
+          const err = new Error(`Invalid resource total for ${key}: must be a non-negative integer`);
+          err.statusCode = 400;
+          throw err;
+        }
+        const cur = await client.query('SELECT id, total, available FROM resources WHERE id = $1 FOR UPDATE', [meta.id]);
+        if (cur.rows.length === 0) {
+          await client.query(
+            'INSERT INTO resources (id, name, total, available) VALUES ($1, $2, $3, $3)',
+            [meta.id, meta.name, n]
+          );
+        } else {
+          const oldTotal = Number(cur.rows[0].total || 0);
+          const oldAvail = Number(cur.rows[0].available || 0);
+          const inUse = Math.max(0, oldTotal - oldAvail);
+          if (n < inUse) {
+            const err = new Error(`Cannot set ${key} total to ${n}: ${inUse} currently allocated`);
+            err.statusCode = 409;
+            throw err;
+          }
+          const newAvail = n - inUse;
+          await client.query('UPDATE resources SET total = $1, available = $2 WHERE id = $3', [n, newAvail, meta.id]);
+        }
+      }
+      const resRows = await client.query('SELECT id, name, total, available FROM resources ORDER BY id');
+      return resRows.rows;
+    });
+  }
+
+  async getOperationalIntelligenceData() {
+    const [
+      incidents,
+      teams,
+      shelters,
+      resSnap,
+      sectors,
+      assignRes,
+      telemetry,
+      telemCountRes
+    ] = await Promise.all([
+      this.getAllIncidents(),
+      this.getAllTeams(),
+      this.getShelters(),
+      this.getResourcesSnapshot(),
+      this.getSectors(),
+      this.query('SELECT incident_id, team_id, status, eta, assigned_at, completed_at FROM assignments ORDER BY id ASC'),
+      this.getLatestTelemetry(),
+      this.query('SELECT COUNT(*) AS c FROM telemetry')
+    ]);
+    return {
+      incidents,
+      teams,
+      shelters,
+      resources: resSnap.resources || [],
+      sectors,
+      assignments: assignRes.rows || [],
+      telemetry,
+      telemetryCount: Number(telemCountRes.rows[0]?.c || 0)
     };
   }
 }

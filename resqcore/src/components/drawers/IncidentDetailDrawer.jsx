@@ -236,42 +236,76 @@ export const IncidentDetailDrawer = () => {
           )}
         </div>
 
-        {/* Citizen / field requested resources */}
-        {Array.isArray(selectedIncident.requestedResources) && selectedIncident.requestedResources.length > 0 && (
-          <div
-            style={{
-              backgroundColor: '#0A1324',
-              border: '1px solid #1E2E4C',
-              borderRadius: '10px',
-              padding: '10px 12px',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '8px'
-            }}
-          >
-            <div style={{ fontSize: '11px', fontWeight: 700, color: '#93C5FD', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-              Requested Resources
+        {/* Citizen / field requested resources & other needs */}
+        {(() => {
+          const reqList = Array.isArray(selectedIncident.requestedResources)
+            ? selectedIncident.requestedResources
+            : selectedIncident.requestedResources && typeof selectedIncident.requestedResources === 'object'
+              ? Object.entries(selectedIncident.requestedResources)
+                  .filter(([, q]) => Number(q) > 0)
+                  .map(([k, q]) => ({ resourceId: k, name: k, quantity: q }))
+              : [];
+          const otherNeeds = Array.isArray(selectedIncident.otherNeeds) ? selectedIncident.otherNeeds : [];
+          if (reqList.length === 0 && otherNeeds.length === 0) return null;
+          return (
+            <div
+              style={{
+                backgroundColor: '#0A1324',
+                border: '1px solid #1E2E4C',
+                borderRadius: '10px',
+                padding: '10px 12px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px'
+              }}
+            >
+              {reqList.length > 0 && (
+                <>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#93C5FD', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Requested Resources
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                    {reqList.map((res, idx) => (
+                      <span
+                        key={res.resourceId || res.name || idx}
+                        style={{
+                          fontSize: '11.5px',
+                          fontWeight: 600,
+                          color: '#E2E8F0',
+                          backgroundColor: '#13223D',
+                          border: '1px solid #2563EB55',
+                          borderRadius: '999px',
+                          padding: '4px 10px'
+                        }}
+                      >
+                        {res.name || res.resourceId} × {res.quantity}
+                      </span>
+                    ))}
+                  </div>
+                </>
+              )}
+              {otherNeeds.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '2px' }}>
+                  {otherNeeds.map((need, idx) => (
+                    <span
+                      key={idx}
+                      style={{
+                        fontSize: '11px',
+                        color: '#FDE68A',
+                        backgroundColor: 'rgba(245,158,11,0.12)',
+                        border: '1px solid rgba(245,158,11,0.35)',
+                        borderRadius: '999px',
+                        padding: '3px 9px'
+                      }}
+                    >
+                      {need}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-              {selectedIncident.requestedResources.map((res, idx) => (
-                <span
-                  key={res.resourceId || res.name || idx}
-                  style={{
-                    fontSize: '11.5px',
-                    fontWeight: 600,
-                    color: '#E2E8F0',
-                    backgroundColor: '#13223D',
-                    border: '1px solid #2563EB55',
-                    borderRadius: '999px',
-                    padding: '4px 10px'
-                  }}
-                >
-                  {res.name || res.resourceId} × {res.quantity}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* STATUS ACTIONS & ASSIGNED CARDS */}
         <div style={{ marginTop: 'auto', paddingTop: '10px' }}>

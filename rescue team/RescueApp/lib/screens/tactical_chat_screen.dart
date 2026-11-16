@@ -34,6 +34,14 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
     'Relay link OK',
   ];
 
+  final List<String> _citizenQuickBursts = [
+    'We are en route',
+    'Arrived at your location',
+    'Share landmark / floor',
+    'Are all members safe?',
+    'Resolved · All safe',
+  ];
+
   @override
   void initState() {
     super.initState();
@@ -75,15 +83,39 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
   void _sendMessage({String? customText, String? locationTag}) {
     final text = customText ?? _textController.text;
     if (text.trim().isEmpty) return;
+    final activeChannel = widget.appState.activeChatChannel;
     widget.appState.addMessage(text, locationTag: locationTag);
 
+    String? targetIncId;
+    if (activeChannel.startsWith('incident-')) {
+      targetIncId = activeChannel.substring('incident-'.length).trim();
+    } else if (widget.appState.activeAssignedIncident != null) {
+      targetIncId = widget.appState.activeAssignedIncident!.id;
+    } else if (widget.appState.incidents.isNotEmpty) {
+      targetIncId = widget.appState.incidents.first.id;
+    }
+
     // Sync incident status if quick status bursts are used
-    if (customText == 'En route' && widget.appState.incidents.isNotEmpty) {
-      widget.appState.updateIncidentStatus(widget.appState.incidents.first.id, 'Responding', notes: 'Rescue team en route to location');
-    } else if (customText == 'On scene' && widget.appState.incidents.isNotEmpty) {
-      widget.appState.updateIncidentStatus(widget.appState.incidents.first.id, 'On site', notes: 'Rescue team arrived on scene');
-    } else if (customText == 'Resolved · All safe' && widget.appState.incidents.isNotEmpty) {
-      widget.appState.updateIncidentStatus(widget.appState.incidents.first.id, 'Resolved', notes: 'Evacuation completed · All casualties accounted for');
+    if (targetIncId != null && targetIncId.isNotEmpty) {
+      if (customText == 'En route' || customText == 'We are en route') {
+        widget.appState.updateIncidentStatus(
+          targetIncId,
+          'Responding',
+          notes: 'Rescue team en route to location',
+        );
+      } else if (customText == 'On scene' || customText == 'Arrived at your location') {
+        widget.appState.updateIncidentStatus(
+          targetIncId,
+          'On site',
+          notes: 'Rescue team arrived on scene',
+        );
+      } else if (customText == 'Resolved · All safe') {
+        widget.appState.updateIncidentStatus(
+          targetIncId,
+          'Resolved',
+          notes: 'Evacuation completed · All casualties accounted for',
+        );
+      }
     }
 
     if (customText == null) _textController.clear();
@@ -96,7 +128,19 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
     final activeChannel = widget.appState.activeChatChannel;
     final directChannel = widget.appState.directTeamChannel;
     final assignedInc = widget.appState.activeAssignedIncident;
+    final chatIncidents = widget.appState.chatEligibleIncidents;
+    final isIncidentChannel = activeChannel.startsWith('incident-');
+    final channelIncident = widget.appState.activeIncidentForChannel(activeChannel);
     final messages = widget.appState.activeChannelMessages;
+    final bursts = isIncidentChannel ? _citizenQuickBursts : _quickBursts;
+
+    final channelTitle = isIncidentChannel
+        ? '# Citizen · ${channelIncident?.citizenName?.trim().isNotEmpty == true ? channelIncident!.citizenName!.trim() : activeChannel.substring('incident-'.length)}'
+        : isDemo
+            ? 'Channel 4-Alpha'
+            : activeChannel == 'command-net'
+                ? '# Command Net'
+                : '# HQ Direct (${widget.appState.teamName})';
 
     return Scaffold(
       backgroundColor: TacticalColors.surface,
@@ -132,22 +176,23 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
                               Container(
                                 width: 8,
                                 height: 8,
-                                decoration: const BoxDecoration(
-                                  color: TacticalColors.tertiary,
+                                decoration: BoxDecoration(
+                                  color: isIncidentChannel
+                                      ? const Color(0xFF14B8A6)
+                                      : TacticalColors.tertiary,
                                   shape: BoxShape.circle,
                                 ),
                               ),
                               const SizedBox(width: 8),
-                              Text(
-                                isDemo
-                                    ? 'Channel 4-Alpha'
-                                    : activeChannel == 'command-net'
-                                        ? '# Command Net'
-                                        : '# HQ Direct (${widget.appState.teamName})',
-                                style: const TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                  color: TacticalColors.onSurface,
+                              Flexible(
+                                child: Text(
+                                  channelTitle,
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.bold,
+                                    color: TacticalColors.onSurface,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
                                 ),
                               ),
                             ],
@@ -222,13 +267,17 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
                             ),
                         ],
                       ),
-                      if (!isDemo && directChannel != null) ...[
+                      if ((!isDemo && directChannel != null) || chatIncidents.isNotEmpty) ...[
                         const SizedBox(height: 10),
                         Wrap(
                           spacing: 8,
+                          runSpacing: 6,
                           children: [
                             ChoiceChip(
-                              label: const Text('# Command Net', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+                              label: Text(
+                                isDemo ? '# Channel 4-Alpha' : '# Command Net',
+                                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+                              ),
                               selected: activeChannel == 'command-net',
                               selectedColor: TacticalColors.primaryContainer,
                               backgroundColor: TacticalColors.surfaceContainerHigh,
@@ -237,17 +286,85 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
                               ),
                               onSelected: (_) => widget.appState.setChatChannel('command-net'),
                             ),
-                            ChoiceChip(
-                              label: const Text('# HQ Direct', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
-                              selected: activeChannel == directChannel,
-                              selectedColor: TacticalColors.primaryContainer,
-                              backgroundColor: TacticalColors.surfaceContainerHigh,
-                              labelStyle: TextStyle(
-                                color: activeChannel == directChannel ? TacticalColors.onPrimaryContainer : TacticalColors.onSurfaceVariant,
+                            if (!isDemo && directChannel != null)
+                              ChoiceChip(
+                                label: const Text('# HQ Direct', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+                                selected: activeChannel == directChannel,
+                                selectedColor: TacticalColors.primaryContainer,
+                                backgroundColor: TacticalColors.surfaceContainerHigh,
+                                labelStyle: TextStyle(
+                                  color: activeChannel == directChannel ? TacticalColors.onPrimaryContainer : TacticalColors.onSurfaceVariant,
+                                ),
+                                onSelected: (_) => widget.appState.setChatChannel(directChannel),
                               ),
-                              onSelected: (_) => widget.appState.setChatChannel(directChannel),
-                            ),
+                            ...chatIncidents.map((inc) {
+                              final incCh = 'incident-${inc.id}';
+                              final isSel = activeChannel == incCh;
+                              return ChoiceChip(
+                                label: Text(
+                                  '# Citizen · ${inc.id}',
+                                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+                                ),
+                                selected: isSel,
+                                selectedColor: const Color(0xFF0D9488),
+                                backgroundColor: TacticalColors.surfaceContainerHigh,
+                                labelStyle: TextStyle(
+                                  color: isSel ? Colors.white : const Color(0xFF5EEAD4),
+                                ),
+                                onSelected: (_) => widget.appState.setChatChannel(incCh),
+                              );
+                            }),
                           ],
+                        ),
+                      ],
+                      if (isIncidentChannel && channelIncident != null) ...[
+                        const SizedBox(height: 10),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF0D9488).withValues(alpha: 0.14),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: const Color(0xFF14B8A6).withValues(alpha: 0.4),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(
+                                Icons.person_pin_circle_outlined,
+                                color: Color(0xFF5EEAD4),
+                                size: 18,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Direct Citizen Link · ${channelIncident.title}',
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold,
+                                        color: TacticalColors.onSurface,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      '${channelIncident.location}'
+                                      '${(channelIncident.contactNumber ?? "").isNotEmpty ? " · ${channelIncident.contactNumber}" : ""}',
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        color: Color(0xFF99F6E4),
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ],
                     ],
@@ -441,10 +558,10 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
                   height: 32,
                   child: ListView.separated(
                     scrollDirection: Axis.horizontal,
-                    itemCount: _quickBursts.length,
+                    itemCount: bursts.length,
                     separatorBuilder: (_, __) => const SizedBox(width: 8),
                     itemBuilder: (context, index) {
-                      final burst = _quickBursts[index];
+                      final burst = bursts[index];
                       return ActionChip(
                         backgroundColor: TacticalColors.surfaceContainerHigh,
                         side: const BorderSide(color: Color(0xFF1E293B)),
@@ -583,9 +700,12 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
   Widget _buildMessageBubble(ChatMessage msg) {
     final isMe = msg.isMe;
 
+    final isCitizen = (msg.senderRole ?? '').toLowerCase() == 'citizen';
     Color avatarBg;
     if (msg.isBot) {
       avatarBg = TacticalColors.emergencyRed;
+    } else if (isCitizen) {
+      avatarBg = const Color(0xFF0D9488);
     } else if (msg.initials == 'RN') {
       avatarBg = TacticalColors.primaryContainer;
     } else if (msg.initials == 'PS') {
@@ -635,7 +755,11 @@ class _TacticalChatScreenState extends State<TacticalChatScreen> {
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.bold,
-                        color: msg.isBot ? TacticalColors.emergencyRed : TacticalColors.primary,
+                        color: msg.isBot
+                            ? TacticalColors.emergencyRed
+                            : isCitizen
+                                ? const Color(0xFF5EEAD4)
+                                : TacticalColors.primary,
                       ),
                     ),
                     const SizedBox(width: 6),

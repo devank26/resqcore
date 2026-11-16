@@ -40,10 +40,34 @@ class _RescueAppState extends State<RescueApp> {
   final AppState _appState = AppState();
 
   @override
+  void initState() {
+    super.initState();
+    _appState.restorePersistedState();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: _appState,
       builder: (context, _) {
+        final Widget rootScreen;
+        if (!_appState.isHydrated) {
+          rootScreen = const Scaffold(
+            backgroundColor: TacticalColors.surface,
+            body: Center(
+              child: CircularProgressIndicator(color: TacticalColors.primary),
+            ),
+          );
+        } else if (_appState.isAuthenticated) {
+          rootScreen = MainShellScreen(appState: _appState);
+        } else {
+          rootScreen = LoginScreen(
+            appState: _appState,
+            onLoginSuccess: () => setState(() {}),
+            onSosPressed: () => _openSosScreen(context),
+          );
+        }
+
         return MaterialApp(
           title: 'RescueTeam - Tactical Ops',
           debugShowCheckedModeBanner: false,
@@ -53,13 +77,7 @@ class _RescueAppState extends State<RescueApp> {
             overscroll: false,
           ),
           builder: (context, child) => TacticalDeviceShell(child: child ?? const SizedBox.shrink()),
-          home: _appState.isAuthenticated
-              ? MainShellScreen(appState: _appState)
-              : LoginScreen(
-                  appState: _appState,
-                  onLoginSuccess: () => setState(() {}),
-                  onSosPressed: () => _openSosScreen(context),
-                ),
+          home: rootScreen,
         );
       },
     );
@@ -146,7 +164,10 @@ class _MainShellScreenState extends State<MainShellScreen> {
     );
   }
 
-  void _openTeamChat() {
+  void _openTeamChat([String? initialChannel]) {
+    if (initialChannel != null && initialChannel.trim().isNotEmpty) {
+      widget.appState.setChatChannel(initialChannel.trim());
+    }
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => TacticalChatScreen(
@@ -164,7 +185,8 @@ class _MainShellScreenState extends State<MainShellScreen> {
           appState: widget.appState,
           incidentId: incident.id,
           onSosPressed: _openSosScreen,
-          onOpenChat: _openTeamChat,
+          onOpenChat: () => _openTeamChat('command-net'),
+          onOpenCitizenChat: () => _openTeamChat('incident-${incident.id}'),
           onOpenMap: () {
             Navigator.of(detailCtx).pop();
             widget.appState.setTabIndex(1);

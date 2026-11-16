@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../../models/emergency_request.dart';
+import '../../providers/rescue_provider.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_text_styles.dart';
 import '../../widgets/status_badge.dart';
+import '../incident_chat_screen.dart';
 
 class RequestDetailDialog extends StatelessWidget {
   final EmergencyRequest request;
@@ -23,6 +26,12 @@ class RequestDetailDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final provider = context.watch<RescueProvider>();
+    final liveReq = provider.allRequests.firstWhere(
+      (r) => r.id == request.id,
+      orElse: () => request,
+    );
+
     return Container(
       padding: const EdgeInsets.only(top: 8),
       decoration: const BoxDecoration(
@@ -34,7 +43,7 @@ class RequestDetailDialog extends StatelessWidget {
       ),
       child: SafeArea(
         top: false,
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -75,7 +84,7 @@ class RequestDetailDialog extends StatelessWidget {
                       ),
                     ],
                   ),
-                  StatusBadge(status: request.status),
+                  StatusBadge(status: liveReq.status),
                 ],
               ),
               const SizedBox(height: 16),
@@ -185,7 +194,7 @@ class RequestDetailDialog extends StatelessWidget {
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Icon(
-                        request.dispatchIcon,
+                        liveReq.dispatchIcon,
                         size: 18,
                         color: AppColors.primary,
                       ),
@@ -202,7 +211,7 @@ class RequestDetailDialog extends StatelessWidget {
                             ),
                           ),
                           Text(
-                            request.dispatchUpdate,
+                            liveReq.dispatchUpdate,
                             style: AppTextStyles.bodySm.copyWith(
                               color: AppColors.textWhite,
                               fontWeight: FontWeight.w600,
@@ -214,7 +223,70 @@ class RequestDetailDialog extends StatelessWidget {
                   ],
                 ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
+
+              // Direct Chat with Assigned Rescue Team
+              if (liveReq.hasAssignedTeam)
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      final rootNav = Navigator.of(context, rootNavigator: true);
+                      Navigator.of(context).pop();
+                      rootNav.push(
+                        MaterialPageRoute(
+                          builder: (_) => CitizenTeamChatScreen(initialRequest: liveReq),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.forum_outlined, size: 19),
+                    label: Text(
+                      'Chat with ${liveReq.assignedTeam ?? "Assigned Team"}',
+                      style: AppTextStyles.labelMd.copyWith(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.successDark,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                )
+              else
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceContainerLow,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppColors.strokeBorder),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.lock_clock_outlined,
+                        size: 16,
+                        color: AppColors.textTertiary,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Direct team chat unlocks once Command Center assigns a rescue unit.',
+                          style: AppTextStyles.bodySm.copyWith(
+                            color: AppColors.textSecondary,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 12),
 
               // Close CTA
               SizedBox(

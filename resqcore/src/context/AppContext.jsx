@@ -8,6 +8,7 @@ import {
 } from '../data/initialData';
 import {
   apiUrl,
+  wsUrl,
   getStoredToken,
   setStoredToken,
   clearStoredToken
@@ -37,6 +38,10 @@ export const AppProvider = ({ children }) => {
   const [cameras, setCameras] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [osState, setOsState] = useState(null);
+  const [osLive, setOsLive] = useState(null);
+  const [osLastUpdated, setOsLastUpdated] = useState(null);
+  const [intelligence, setIntelligence] = useState(null);
+  const [wsStatus, setWsStatus] = useState('Offline'); // 'Live' | 'Reconnecting' | 'Offline'
 
   // Selection & UI State
   const [selectedIncidentId, setSelectedIncidentId] = useState(null);
@@ -120,6 +125,7 @@ export const AppProvider = ({ children }) => {
     setTeams([]);
     setCameras([]);
     setAlerts([]);
+    setIntelligence(null);
     setMessages({});
     setToasts([]);
     setSelectedIncidentId(null);
@@ -148,6 +154,7 @@ export const AppProvider = ({ children }) => {
     setTeams([]);
     setCameras([]);
     setAlerts([]);
+    setIntelligence(null);
     setMessages({});
     setToasts([]);
     setSelectedIncidentId(null);
@@ -215,6 +222,7 @@ export const AppProvider = ({ children }) => {
     setTeams(initialTeams);
     setMessages(initialMessages);
     setAlerts(initialAlerts);
+    setIntelligence(null);
     setCameras(initialCameras);
     setActiveChannel('ernakulam-command');
     setSelectedIncidentId('INC-2048');
@@ -249,13 +257,16 @@ export const AppProvider = ({ children }) => {
     fetch(apiUrl('/api/auth/me'), {
       headers: { Authorization: `Bearer ${existing}` }
     })
-      .then((res) => {
+      .then(async (res) => {
         if (!res.ok) throw new Error('unauthorized');
+        const data = await res.json().catch(() => null);
         if (!cancelled) {
           setToken(existing);
           setUser(prev => ({
             ...prev,
-            name: prev.name || 'Command Operator',
+            id: data?.user?.id || prev.id,
+            name: data?.user?.name || prev.name || 'Command Operator',
+            email: data?.user?.email || prev.email || '',
             role: 'Command Operator'
           }));
           setIsAuthenticated(true);
@@ -308,16 +319,94 @@ export const AppProvider = ({ children }) => {
         if (data?.state) setOsState(data.state);
       })
       .catch(() => { });
-  }, [isAuthenticated, isDemoMode, token, apiFetch]);
 
-  const refreshOsState = useCallback(() => {
-    if (isDemoMode) return;
-    apiFetch('/api/os/state')
+    apiFetch('/api/os-live')
       .then(res => (res.ok ? res.json() : null))
       .then(data => {
-        if (data?.state) setOsState(data.state);
+        if (data && data.banker) {
+          setOsLive(data);
+          setOsState(data);
+          if (data.lastUpdated) setOsLastUpdated(data.lastUpdated);
+        }
       })
       .catch(() => { });
+
+    apiFetch('/api/reports/intelligence')
+      .then(res => (res.ok ? res.json() : null))
+      .then(data => {
+        if (data?.intelligence) setIntelligence(data.intelligence);
+      })
+      .catch(() => { });
+  }, [isAuthenticated, isDemoMode, token, apiFetch]);
+
+  const refreshIntelligence = useCallback(async () => {
+    if (isDemoMode) return null;
+    try {
+      const res = await apiFetch('/api/reports/intelligence');
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.intelligence) {
+        setIntelligence(data.intelligence);
+        return data.intelligence;
+      }
+    } catch (_) { }
+    return null;
+  }, [isDemoMode, apiFetch]);
+
+  const intelligenceTimerRef = useRef(null);
+  const scheduleRefreshIntelligence = useCallback(() => {
+    if (isDemoMode) return;
+    if (intelligenceTimerRef.current) clearTimeout(intelligenceTimerRef.current);
+    intelligenceTimerRef.current = setTimeout(() => {
+      intelligenceTimerRef.current = null;
+      refreshIntelligence();
+    }, 250);
+  }, [isDemoMode, refreshIntelligence]);
+  const scheduleRefreshIntelligenceRef = useRef(() => {});
+  scheduleRefreshIntelligenceRef.current = scheduleRefreshIntelligence;
+
+  useEffect(() => () => {
+    if (intelligenceTimerRef.current) clearTimeout(intelligenceTimerRef.current);
+  }, []);
+
+  const refreshOsLive = useCallback(async () => {
+    if (isDemoMode) return null;
+    try {
+      const res = await apiFetch('/api/os-live');
+      const data = await res.json().catch(() => null);
+      if (res.ok && data && data.banker) {
+        setOsLive(data);
+        setOsState(data);
+        if (data.lastUpdated) setOsLastUpdated(data.lastUpdated);
+        return data;
+      }
+    } catch (_) { }
+    return null;
+  }, [isDemoMode, apiFetch]);
+
+  const refreshOsState = useCallback(() => {
+    refreshOsLive();
+  }, [refreshOsLive]);
+
+  const updateOsResourceTotals = useCallback(async (updates) => {
+    if (isDemoMode) return { ok: false, error: 'Resource updates require Live Backend mode' };
+    try {
+      const res = await apiFetch('/api/os-live/resources', {
+        method: 'POST',
+        body: JSON.stringify(updates)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        return { ok: false, status: res.status, error: data.error || data.message || `HTTP ${res.status}` };
+      }
+      if (data.banker) {
+        setOsLive(data);
+        setOsState(data);
+        if (data.lastUpdated) setOsLastUpdated(data.lastUpdated);
+      }
+      return { ok: true, data };
+    } catch (err) {
+      return { ok: false, error: err?.message || 'Network error' };
+    }
   }, [isDemoMode, apiFetch]);
 
   // Real-Time Multi-Channel SSE Event Pipeline with Exponential Backoff
@@ -371,7 +460,24 @@ export const AppProvider = ({ children }) => {
         eventSource.addEventListener('os_state', (e) => {
           try {
             const payload = JSON.parse(e.data);
-            if (payload) setOsState(payload);
+            if (payload) {
+              setOsState(payload);
+              if (payload.banker) {
+                setOsLive(payload);
+                if (payload.lastUpdated) setOsLastUpdated(payload.lastUpdated);
+              }
+            }
+          } catch (_) { }
+        });
+
+        eventSource.addEventListener('OS_LIVE_UPDATED', (e) => {
+          try {
+            const payload = JSON.parse(e.data);
+            if (payload && payload.banker) {
+              setOsLive(payload);
+              setOsState(payload);
+              setOsLastUpdated(payload.lastUpdated || new Date().toISOString());
+            }
           } catch (_) { }
         });
 
@@ -550,7 +656,7 @@ export const AppProvider = ({ children }) => {
                   assignedTeam: teamName,
                   assignedTeamId: payload.teamId || payload.incident?.assignedTeamId || inc.assignedTeamId,
                   teamAssigned: teamName,
-                  requestedResources: Array.isArray(payload.incident?.requestedResources)
+                  requestedResources: payload.incident?.requestedResources !== undefined
                     ? payload.incident.requestedResources
                     : inc.requestedResources
                 };
@@ -667,6 +773,13 @@ export const AppProvider = ({ children }) => {
         }
       });
 
+      // 9. Operational Intelligence real-time refresh signal
+      ['intelligence_updated', 'shelter_updated', 'incident_reported', 'sos_resolved'].forEach((evName) => {
+        eventSource.addEventListener(evName, () => {
+          scheduleRefreshIntelligenceRef.current();
+        });
+      });
+
         eventSource.onerror = () => {
           if (eventSource) {
             eventSource.close();
@@ -706,6 +819,86 @@ export const AppProvider = ({ children }) => {
       setSseStatus('disconnected');
     };
   }, [isAuthenticated, isDemoMode, token, logout]);
+
+  // Real-Time WebSocket channel for instant OS Monitor snapshots (backoff 1s..15s)
+  useEffect(() => {
+    if (!isAuthenticated || isDemoMode || !token) {
+      setWsStatus('Offline');
+      return;
+    }
+
+    let ws = null;
+    let reconnectTimer = null;
+    let attempt = 0;
+    let disposed = false;
+
+    const connectWs = () => {
+      if (disposed) return;
+      try {
+        ws = new WebSocket(wsUrl(`/ws?token=${encodeURIComponent(token)}`));
+        ws.onopen = () => {
+          attempt = 0;
+          setWsStatus('Live');
+          refreshOsLive();
+          scheduleRefreshIntelligenceRef.current();
+        };
+        ws.onmessage = (evt) => {
+          try {
+            const msg = JSON.parse(evt.data);
+            const evType = msg?.type || msg?.event;
+            if ((evType === 'OS_LIVE_UPDATED' || evType === 'os_state') && msg?.data?.banker) {
+              setOsLive(msg.data);
+              setOsState(msg.data);
+              setOsLastUpdated(msg.data.lastUpdated || msg.timestamp || new Date().toISOString());
+            }
+            if (
+              evType === 'intelligence_updated' ||
+              evType === 'OS_LIVE_UPDATED' ||
+              evType === 'os_state' ||
+              evType === 'new_citizen_sos' ||
+              evType === 'incident_verified' ||
+              evType === 'incident_assigned' ||
+              evType === 'incident_status_changed' ||
+              evType === 'incident_reported' ||
+              evType === 'new_rescue_sos' ||
+              evType === 'sos_resolved' ||
+              evType === 'team_telemetry_update' ||
+              evType === 'team_registered' ||
+              evType === 'shelter_updated'
+            ) {
+              scheduleRefreshIntelligenceRef.current();
+            }
+          } catch (_) { }
+        };
+        ws.onerror = () => {
+          try { ws?.close(); } catch (_) { }
+        };
+        ws.onclose = () => {
+          if (disposed) return;
+          setWsStatus('Reconnecting');
+          const delay = Math.min(15000, 1000 * Math.pow(2, attempt));
+          attempt += 1;
+          reconnectTimer = setTimeout(connectWs, delay);
+        };
+      } catch (_) {
+        if (!disposed) {
+          setWsStatus('Reconnecting');
+          const delay = Math.min(15000, 1000 * Math.pow(2, attempt));
+          attempt += 1;
+          reconnectTimer = setTimeout(connectWs, delay);
+        }
+      }
+    };
+
+    connectWs();
+
+    return () => {
+      disposed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      try { ws?.close(); } catch (_) { }
+      setWsStatus('Offline');
+    };
+  }, [isAuthenticated, isDemoMode, token, refreshOsLive]);
 
   // Get active selected incident object
   const selectedIncident = incidents.find(i => i.id === selectedIncidentId) || incidents[0];
@@ -1101,7 +1294,14 @@ export const AppProvider = ({ children }) => {
         sseStatus,
         citizenBridgeConnected,
         osState,
-        refreshOsState
+        osLive,
+        osLastUpdated,
+        intelligence,
+        wsStatus,
+        refreshOsState,
+        refreshOsLive,
+        refreshIntelligence,
+        updateOsResourceTotals
       }}
     >
       {children}
