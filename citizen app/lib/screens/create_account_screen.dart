@@ -30,7 +30,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen>
   final _confirmPasswordController = TextEditingController();
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
-  String _authMethod = 'phone';
+  String _authMethod = 'email';
 
   // Step 2 – Profile
   String _selectedBloodGroup = '';
@@ -159,9 +159,9 @@ class _CreateAccountScreenState extends State<CreateAccountScreen>
     try {
       final profile = UserProfile(
         fullName: _nameController.text.trim(),
-        phoneNumber: _authMethod == 'phone'
-            ? '+91 ${_phoneController.text.trim()}'
-            : '',
+        phoneNumber: _phoneController.text.trim().isEmpty
+            ? ''
+            : '+91 ${_phoneController.text.trim()}',
         email: _emailController.text.trim(),
         bloodGroup: _selectedBloodGroup,
         emergencyContactName: _emergencyNameController.text.trim(),
@@ -170,15 +170,21 @@ class _CreateAccountScreenState extends State<CreateAccountScreen>
         sector: _sectorController.text.trim(),
         medicalNotes: _medicalController.text.trim(),
         isRegistered: true,
-        password: _passwordController.text.trim(),
       );
 
       if (!mounted) return;
       final provider = context.read<RescueProvider>();
-      await provider.registerNewAccount(profile);
+      final signedIn = await provider.registerNewAccount(profile, password: _passwordController.text.trim());
 
       if (!mounted) return;
       setState(() => _isSubmitting = false);
+      if (!signedIn) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Check your email for a confirmation link, then sign in.')),
+        );
+        Navigator.of(context).popUntil((route) => route.isFirst);
+        return;
+      }
 
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const MainShell()),
@@ -360,24 +366,22 @@ class _CreateAccountScreenState extends State<CreateAccountScreen>
           const SizedBox(height: 8),
           _authToggle(),
           const SizedBox(height: 12),
-          if (_authMethod == 'phone') ...[
-            _fieldLabel('Mobile number'),
-            const SizedBox(height: 6),
-            _inputField(
-                controller: _phoneController,
-                hint: 'Enter mobile number',
-                icon: Icons.call_outlined,
-                prefix: '+91 ',
-                keyboard: TextInputType.phone),
-          ] else ...[
-            _fieldLabel('Email address'),
-            const SizedBox(height: 6),
-            _inputField(
-                controller: _emailController,
-                hint: 'your@email.com',
-                icon: Icons.email_outlined,
-                keyboard: TextInputType.emailAddress),
-          ],
+          _fieldLabel('Email address'),
+          const SizedBox(height: 6),
+          _inputField(
+              controller: _emailController,
+              hint: 'your@email.com',
+              icon: Icons.email_outlined,
+              keyboard: TextInputType.emailAddress),
+          const SizedBox(height: 12),
+          _fieldLabel('Mobile number (optional)'),
+          const SizedBox(height: 6),
+          _inputField(
+              controller: _phoneController,
+              hint: 'Enter mobile number',
+              icon: Icons.call_outlined,
+              prefix: '+91 ',
+              keyboard: TextInputType.phone),
           const SizedBox(height: 14),
           _fieldLabel('Password'),
           const SizedBox(height: 6),
@@ -699,50 +703,19 @@ class _CreateAccountScreenState extends State<CreateAccountScreen>
 
   Widget _authToggle() {
     return Container(
-      padding: const EdgeInsets.all(4),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
         color: AppColors.surfaceContainerLowest,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-            color: AppColors.strokeBorder.withValues(alpha: 0.6)),
+        border: Border.all(color: AppColors.strokeBorder.withValues(alpha: 0.6)),
       ),
       child: Row(
         children: [
-          _authTab('Phone number', 'phone'),
-          _authTab('Email address', 'email'),
+          const Icon(Icons.lock_outline, size: 16, color: AppColors.primary),
+          const SizedBox(width: 8),
+          Text('Secure email and password account', style: AppTextStyles.labelMd.copyWith(color: AppColors.textWhite)),
         ],
-      ),
-    );
-  }
-
-  Widget _authTab(String label, String method) {
-    final selected = _authMethod == method;
-    return Expanded(
-      child: InkWell(
-        onTap: () => setState(() => _authMethod = method),
-        borderRadius: BorderRadius.circular(8),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          decoration: BoxDecoration(
-            color: selected
-                ? AppColors.surfaceContainerHigh
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Center(
-            child: Text(
-              label,
-              style: AppTextStyles.labelMd.copyWith(
-                color: selected
-                    ? AppColors.textWhite
-                    : AppColors.textSecondary,
-                fontWeight:
-                    selected ? FontWeight.w700 : FontWeight.w500,
-              ),
-            ),
-          ),
-        ),
       ),
     );
   }

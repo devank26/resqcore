@@ -9,8 +9,7 @@ class UserProfile {
   final String sector;
   final String medicalNotes;
   final bool isRegistered;
-  final String? avatarUrl; // Google profile picture URL
-  final String password;
+  final String? avatarUrl;
 
   const UserProfile({
     required this.fullName,
@@ -24,7 +23,6 @@ class UserProfile {
     required this.medicalNotes,
     this.isRegistered = true,
     this.avatarUrl,
-    this.password = '',
   });
 
   // ── Serialisation ───────────────────────────────────────────────────────
@@ -40,7 +38,6 @@ class UserProfile {
         'medicalNotes': medicalNotes,
         'isRegistered': isRegistered,
         'avatarUrl': avatarUrl,
-        'password': password,
       };
 
   factory UserProfile.fromJson(Map<String, dynamic> json) => UserProfile(
@@ -55,7 +52,6 @@ class UserProfile {
         medicalNotes: json['medicalNotes'] as String? ?? '',
         isRegistered: json['isRegistered'] as bool? ?? true,
         avatarUrl: json['avatarUrl'] as String?,
-        password: json['password'] as String? ?? '',
       );
 
   // ── Lookup helpers ──────────────────────────────────────────────────────
@@ -71,12 +67,6 @@ class UserProfile {
     return this.email.trim().toLowerCase() == email.trim().toLowerCase();
   }
 
-  /// Verifies password (allows empty if account was created without a password e.g. Google OAuth)
-  bool verifyPassword(String attempt) {
-    if (password.isEmpty) return true;
-    return password == attempt;
-  }
-
   UserProfile copyWith({
     String? fullName,
     String? phoneNumber,
@@ -89,7 +79,6 @@ class UserProfile {
     String? medicalNotes,
     bool? isRegistered,
     String? avatarUrl,
-    String? password,
   }) {
     return UserProfile(
       fullName: fullName ?? this.fullName,
@@ -103,7 +92,6 @@ class UserProfile {
       medicalNotes: medicalNotes ?? this.medicalNotes,
       isRegistered: isRegistered ?? this.isRegistered,
       avatarUrl: avatarUrl ?? this.avatarUrl,
-      password: password ?? this.password,
     );
   }
 }

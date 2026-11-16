@@ -57,6 +57,26 @@ class RescueTeam {
     required this.members,
   });
 
+  factory RescueTeam.fromJson(Map<String, dynamic> json) {
+    final responders = (json['responders'] as num?)?.toInt() ?? 0;
+    return RescueTeam(
+      id: (json['id'] ?? '').toString(),
+      name: (json['name'] ?? 'Rescue team').toString(),
+      sector: (json['sector_id'] ?? json['sectorId'] ?? '').toString(),
+      callsign: (json['callsign'] ?? '').toString(),
+      frequency: '',
+      commanderName: '',
+      commanderPhone: '',
+      commanderExperience: (json['specialization'] ?? '').toString(),
+      commanderBloodGroup: '',
+      commanderAvatar: '',
+      syncedCount: 0,
+      totalCount: responders,
+      status: (json['status'] ?? 'Available').toString(),
+      members: const [],
+    );
+  }
+
   static List<RescueTeam> mockTeams() {
     return [
       RescueTeam(

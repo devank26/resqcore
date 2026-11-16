@@ -5,7 +5,6 @@ import '../models/user_profile.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text_styles.dart';
 import '../widgets/tactical_radar_graphic.dart';
-import 'verification_screen.dart';
 import 'main_shell.dart';
 import 'create_account_screen.dart';
 import 'dialogs/call_112_dialog.dart';
@@ -23,11 +22,6 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
   bool _obscurePassword = true;
   bool _isLoggingIn = false;
   String? _authError;
-  bool _isGoogleLoading = false;
-
-  // Saved account lookup state
-  UserProfile? _savedAccount;
-  bool _isLookingUp = false;
 
   @override
   void initState() {
@@ -39,10 +33,6 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
           : provider.email,
     );
     _passwordController = TextEditingController();
-    // Try lookup on init in case input was pre-filled
-    if (_inputController.text.isNotEmpty) {
-      _lookupAccount(_inputController.text);
-    }
   }
 
   @override
@@ -89,26 +79,17 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
     }
   }
 
-  /// Debounced lookup: called when the input field changes.
-  Future<void> _lookupAccount(String value) async {
-    if (value.trim().length < 5) {
-      if (_savedAccount != null) setState(() => _savedAccount = null);
+  Future<void> _requestPasswordReset() async {
+    final error = await context.read<RescueProvider>().requestPasswordReset(_inputController.text);
+    if (!mounted) return;
+    if (error != null) {
+      setState(() => _authError = error);
       return;
     }
-    setState(() => _isLookingUp = true);
-    final provider = context.read<RescueProvider>();
-    final isPhone = provider.authMethod == 'phone';
-    final found = await provider.lookupAccount(
-      phone: isPhone ? value : null,
-      email: isPhone ? null : value,
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('If this email is registered, a reset link has been sent.')),
     );
-    if (!mounted) return;
-    setState(() {
-      _savedAccount = found;
-      _isLookingUp = false;
-    });
   }
-
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<RescueProvider>();
@@ -240,10 +221,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
                   children: [
                     Expanded(
                       child: InkWell(
-                        onTap: () {
-                          provider.setAuthMethod('phone');
-                          _inputController.text = provider.phoneNumber;
-                        },
+                        onTap: null,
                         borderRadius: BorderRadius.circular(8),
                         child: AnimatedContainer(
                           duration: const Duration(milliseconds: 200),
@@ -264,7 +242,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
                           ),
                           child: Center(
                             child: Text(
-                              'Phone number',
+                              'Phone disabled',
                               style: AppTextStyles.labelMd.copyWith(
                                 color: isPhone
                                     ? AppColors.textWhite
@@ -395,8 +373,6 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
                           } else {
                             provider.setEmail(val);
                           }
-                          // Trigger saved-account lookup
-                          _lookupAccount(val);
                         },
                       ),
                     ),
@@ -417,13 +393,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
                     ),
                   ),
                   TextButton(
-                    onPressed: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const VerificationScreen(),
-                        ),
-                      );
-                    },
+                    onPressed: _requestPasswordReset,
                     style: TextButton.styleFrom(
                       padding: EdgeInsets.zero,
                       minimumSize: Size.zero,
@@ -520,47 +490,6 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
               ],
               const SizedBox(height: 16),
 
-              // ── Saved Account Card (appears when a match is found) ───────
-              AnimatedSwitcher(
-                duration: const Duration(milliseconds: 300),
-                transitionBuilder: (child, animation) => FadeTransition(
-                  opacity: animation,
-                  child: SizeTransition(
-                    sizeFactor: animation,
-                    child: child,
-                  ),
-                ),
-                child: _isLookingUp
-                    ? Padding(
-                        key: const ValueKey('loading'),
-                        padding: const EdgeInsets.only(bottom: 12),
-                        child: Row(
-                          children: [
-                            const SizedBox(
-                              width: 14,
-                              height: 14,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                valueColor: AlwaysStoppedAnimation<Color>(
-                                    AppColors.primary),
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Text(
-                              'Looking up account…',
-                              style: AppTextStyles.bodySm.copyWith(
-                                  color: AppColors.textTertiary),
-                            ),
-                          ],
-                        ),
-                      )
-                    : _savedAccount != null
-                        ? _buildSavedAccountCard(_savedAccount!)
-                        : const SizedBox.shrink(key: ValueKey('empty')),
-              ),
-
-              const SizedBox(height: 4),
-
               // Primary CTA Button: Log in securely with Password
               SizedBox(
                 width: double.infinity,
@@ -608,141 +537,14 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
               ),
               const SizedBox(height: 8),
 
-              // OTP fallback option
-              Center(
-                child: TextButton.icon(
-                  onPressed: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => const VerificationScreen(),
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.sms_outlined, size: 16, color: AppColors.textSecondary),
-                  label: Text(
-                    'Sign in with OTP code instead',
-                    style: AppTextStyles.bodySm.copyWith(
-                      color: AppColors.textSecondary,
-                    ),
-                  ),
-                ),
-              ),
               const SizedBox(height: 8),
 
-              // ── OR divider ──────────────────────────────────────────────
-              Row(
-                children: [
-                  Expanded(
-                    child: Divider(
-                      color: AppColors.strokeBorder.withValues(alpha: 0.5),
-                      thickness: 0.8,
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    child: Text(
-                      'or',
-                      style: AppTextStyles.bodySm.copyWith(
-                        color: AppColors.textTertiary,
-                      ),
-                    ),
-                  ),
-                  Expanded(
-                    child: Divider(
-                      color: AppColors.strokeBorder.withValues(alpha: 0.5),
-                      thickness: 0.8,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-
-              // ── Google Sign-In Button ───────────────────────────────────
-              SizedBox(
-                width: double.infinity,
-                height: 52,
-                child: OutlinedButton(
-                  onPressed: _isGoogleLoading
-                      ? null
-                      : () async {
-                          setState(() => _isGoogleLoading = true);
-                          final provider = context.read<RescueProvider>();
-                          final error = await provider.loginWithGoogle();
-                          if (!mounted) return;
-                          setState(() => _isGoogleLoading = false);
-                          if (error != null) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  'Google Sign-In failed. Please try again.',
-                                  style: const TextStyle(color: Colors.white),
-                                ),
-                                backgroundColor: AppColors.errorContainer,
-                                duration: const Duration(seconds: 3),
-                              ),
-                            );
-                          } else if (provider.isLoggedIn) {
-                            Navigator.of(context).pushReplacement(
-                              MaterialPageRoute(
-                                builder: (_) => const MainShell(),
-                              ),
-                            );
-                          }
-                        },
-                  style: OutlinedButton.styleFrom(
-                    backgroundColor: const Color(0xFF1C2333),
-                    foregroundColor: AppColors.textWhite,
-                    side: BorderSide(
-                      color: AppColors.strokeBorder.withValues(alpha: 0.8),
-                      width: 1,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    elevation: 0,
-                  ),
-                  child: _isGoogleLoading
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2.5,
-                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                          ),
-                        )
-                      : Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            // Google "G" logo using coloured icon segments
-                            Container(
-                              width: 22,
-                              height: 22,
-                              decoration: const BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: Colors.white,
-                              ),
-                              child: Center(
-                                child: Text(
-                                  'G',
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w800,
-                                    color: const Color(0xFF4285F4),
-                                    height: 1,
-                                  ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Text(
-                              'Continue with Google',
-                              style: AppTextStyles.labelLg.copyWith(
-                                color: AppColors.textWhite,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
-                        ),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Text(
+                  'Citizen reports can be sent without an account; staff data requires an approved secure login.',
+                  textAlign: TextAlign.center,
+                  style: AppTextStyles.bodySm.copyWith(color: AppColors.textSecondary),
                 ),
               ),
               const SizedBox(height: 12),
@@ -778,7 +580,20 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
                   ],
                 ),
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: 8),
+              Center(
+                child: TextButton.icon(
+                  onPressed: () {
+                    provider.enterPublicSosMode();
+                    Navigator.of(context).pushReplacement(
+                      MaterialPageRoute(builder: (_) => const MainShell()),
+                    );
+                  },
+                  icon: const Icon(Icons.sos, color: AppColors.error, size: 17),
+                  label: Text('Send an emergency report without signing in', style: AppTextStyles.bodySm.copyWith(color: AppColors.errorLight)),
+                ),
+              ),
+              const SizedBox(height: 10),
 
               // DEMO MODE (Instant Access without login / fake data)
               Container(
